@@ -1,0 +1,11 @@
+[Unit]
+Description=Check GitHub for Lužická updates
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
