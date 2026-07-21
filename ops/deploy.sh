@@ -46,7 +46,7 @@ if [[ "$INITIAL" != true && "$CURRENT" == "$TARGET" ]]; then
 fi
 
 if docker inspect luzicka >/dev/null 2>&1; then
-  /opt/luzicka/ops/backup.sh pre-deploy || true
+  bash /opt/luzicka/ops/backup.sh pre-deploy || true
 fi
 
 git reset --hard "$TARGET"
