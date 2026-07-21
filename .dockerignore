@@ -1,0 +1,8 @@
+.git
+.github
+.env
+data
+ops
+README.md
+SERVER_SETUP.md
+*.log
