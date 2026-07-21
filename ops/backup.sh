@@ -20,9 +20,10 @@ fi
 
 docker exec -e BACKUP_FILE="/backups/$FILENAME" luzicka node -e '
   const { DatabaseSync } = require("node:sqlite");
-  const target = process.env.BACKUP_FILE.replaceAll("\u0027", "\u0027\u0027");
+  const target = process.env.BACKUP_FILE;
+  if (!/^\/backups\/[A-Za-z0-9._-]+$/.test(target)) throw new Error("Neplatná cesta zálohy");
   const db = new DatabaseSync("/data/luzicka.sqlite");
-  db.exec(`VACUUM INTO ${JSON.stringify(target)}`);
+  db.exec(`VACUUM INTO '\''${target}'\''`);
   db.close();
 '
 
