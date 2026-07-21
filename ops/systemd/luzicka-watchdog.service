@@ -4,4 +4,4 @@ After=docker.service tailscaled.service network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/luzicka/ops/watchdog.sh
+ExecStart=/bin/bash /opt/luzicka/ops/watchdog.sh
