@@ -4,7 +4,7 @@ After=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/luzicka/ops/backup.sh scheduled
+ExecStart=/bin/bash /opt/luzicka/ops/backup.sh scheduled
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
