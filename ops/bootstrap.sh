@@ -21,13 +21,23 @@ export DEBIAN_FRONTEND=noninteractive
 hostnamectl set-hostname luzicka
 timedatectl set-timezone Europe/Prague
 
+# MacBook Air 2015 obvykle používá Broadcom BCM4360, jehož ovladač je v non-free.
+if [[ -f /etc/apt/sources.list.d/debian.sources ]]; then
+  sed -i -E 's/^Components:.*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
+fi
+if [[ -f /etc/apt/sources.list ]]; then
+  sed -i -E '/^deb / { /non-free/! s/ main([[:space:]]|$)/ main contrib non-free non-free-firmware\1/; }' /etc/apt/sources.list
+fi
+
 apt-get update
 apt-get install -y \
-  ca-certificates curl git jq openssl iw \
+  ca-certificates curl git jq openssl iw wireless-tools network-manager \
+  linux-headers-amd64 broadcom-sta-dkms \
   docker.io docker-compose \
   unattended-upgrades needrestart smartmontools
 
-systemctl enable --now docker
+modprobe wl 2>/dev/null || true
+systemctl enable --now NetworkManager docker
 
 if ! command -v tailscale >/dev/null 2>&1; then
   curl -fsSL https://tailscale.com/install.sh | sh
@@ -123,7 +133,20 @@ systemctl daemon-reload
 systemctl enable --now luzicka-wifi.service
 systemctl enable --now luzicka-update.timer luzicka-backup.timer luzicka-watchdog.timer
 
-"$REPO_DIR/ops/deploy.sh" --initial
+bash "$REPO_DIR/ops/deploy.sh" --initial
+
+if ! nmcli -t -f TYPE,STATE device status 2>/dev/null | grep -q '^wifi:connected$' && [[ -r /dev/tty ]]; then
+  echo
+  read -r -p "Název domácí Wi-Fi (Enter = přeskočit, pokud používáte kabel): " WIFI_SSID </dev/tty || true
+  if [[ -n "${WIFI_SSID:-}" ]]; then
+    read -r -s -p "Heslo k Wi-Fi: " WIFI_PASSWORD </dev/tty
+    echo
+    nmcli radio wifi on
+    nmcli device wifi rescan || true
+    nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASSWORD"
+    unset WIFI_PASSWORD
+  fi
+fi
 
 if ! tailscale ip -4 >/dev/null 2>&1; then
   echo
@@ -147,8 +170,6 @@ if [[ -n "$DNS_NAME" ]]; then
 else
   URL="$(tailscale ip -4 | head -n1):8787"
 fi
-
-systemctl try-restart NetworkManager.service 2>/dev/null || true
 
 echo
 echo "============================================================"
