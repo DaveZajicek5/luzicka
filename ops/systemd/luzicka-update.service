@@ -1,0 +1,11 @@
+[Unit]
+Description=Update and deploy Lužická from GitHub
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/luzicka/ops/deploy.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -1,0 +1,7 @@
+[Unit]
+Description=Check Lužická and Tailscale health
+After=docker.service tailscaled.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/luzicka/ops/watchdog.sh

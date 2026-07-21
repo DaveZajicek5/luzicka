@@ -2,7 +2,7 @@ name: Test
 
 on:
   push:
-    branches: [main, agent/household-dashboard]
+    branches: [main, "agent/**"]
   pull_request:
     branches: [main]
 
@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     strategy:
       matrix:
         node-version: [22]
@@ -27,3 +27,12 @@ jobs:
         run: npm test
       - name: Check JavaScript syntax
         run: find server.js src test -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Check shell syntax
+        run: find ops -name '*.sh' -print0 | xargs -0 -n1 bash -n
+      - name: Validate container deployment
+        run: |
+          sudo mkdir -p /etc/luzicka /var/lib/luzicka /var/backups/luzicka
+          printf '%s\n' 'VIEWER_PASSWORD=test-viewer' 'ADMIN_PASSWORD=test-admin' 'SESSION_SECRET=0123456789abcdef0123456789abcdef' > /tmp/luzicka.env
+          sudo cp /tmp/luzicka.env /etc/luzicka/luzicka.env
+          docker compose config --quiet
+          docker build -t luzicka:test .
