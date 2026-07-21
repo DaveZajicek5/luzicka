@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/luzicka/ops/deploy.sh
+ExecStart=/bin/bash /opt/luzicka/ops/deploy.sh
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
