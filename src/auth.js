@@ -41,11 +41,13 @@ function readSession(req, config) {
 
 function sessionCookie(token, config) {
   const maxAge = Math.max(60, Math.floor(config.sessionHours * 60 * 60));
-  return `luzicka_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
+  const secure = config.secureCookies ? '; Secure' : '';
+  return `luzicka_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure}`;
 }
 
-function clearCookie() {
-  return 'luzicka_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0';
+function clearCookie(config = {}) {
+  const secure = config.secureCookies ? '; Secure' : '';
+  return `luzicka_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`;
 }
 
 function roleForPassword(password, config) {

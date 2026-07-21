@@ -1,15 +1,15 @@
 {
   "name": "luzicka-household-ledger",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Soukromý dashboard pro transparentní rozúčtování domácnosti.",
   "type": "commonjs",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.9"
   },
   "scripts": {
-    "start": "node --env-file=.env server.js",
-    "dev": "node --watch --env-file=.env server.js",
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --watch --env-file-if-exists=.env server.js",
     "test": "node --test"
   }
 }
