@@ -5,20 +5,30 @@ const path = require('node:path');
 function required(name) {
   const value = process.env[name];
   if (!value || value.startsWith('change-me')) {
-    throw new Error(`Chybí bezpečná hodnota ${name}. Zkopírujte .env.example do .env a upravte ji.`);
+    throw new Error(`Chybí bezpečná hodnota ${name}. Nastavte ji v prostředí nebo v souboru .env.`);
   }
   return value;
 }
 
+function booleanValue(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return String(value).toLowerCase() !== 'false';
+}
+
 function loadConfig(overrides = {}) {
+  const cloud = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
+  const volumePath = process.env.RAILWAY_VOLUME_MOUNT_PATH;
+  const defaultDatabasePath = volumePath ? path.join(volumePath, 'luzicka.sqlite') : './data/luzicka.sqlite';
+
   const config = {
-    host: process.env.HOST || '127.0.0.1',
+    host: process.env.HOST || (cloud ? '0.0.0.0' : '127.0.0.1'),
     port: Number(process.env.PORT || 8787),
-    lanOnly: String(process.env.LAN_ONLY ?? 'true').toLowerCase() !== 'false',
+    lanOnly: booleanValue(process.env.LAN_ONLY, !cloud),
+    secureCookies: booleanValue(process.env.SECURE_COOKIES, cloud),
     viewerPassword: required('VIEWER_PASSWORD'),
     adminPassword: required('ADMIN_PASSWORD'),
     sessionSecret: required('SESSION_SECRET'),
-    databasePath: path.resolve(process.env.DATABASE_PATH || './data/luzicka.sqlite'),
+    databasePath: path.resolve(process.env.DATABASE_PATH || defaultDatabasePath),
     householdName: process.env.HOUSEHOLD_NAME || 'Lužická',
     sessionHours: Number(process.env.SESSION_HOURS || 12),
     ...overrides
