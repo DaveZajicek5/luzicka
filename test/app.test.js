@@ -78,6 +78,16 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   const csrf = csrfFrom(html);
   assert.ok(csrf);
 
+  const calculator = await fetch(`${base}/calculator?period=2026-07`, { headers: { cookie: admin.cookie } });
+  const calculatorHtml = await calculator.text();
+  assert.match(calculatorHtml, /Měsíční předpis/);
+  assert.match(calculatorHtml, /Kontrola rozdělení/);
+  assert.doesNotMatch(calculatorHtml, /Český IBAN/);
+  const settings = await fetch(`${base}/calculator/settings?period=2026-07`, { headers: { cookie: admin.cookie } });
+  const settingsHtml = await settings.text();
+  assert.match(settingsHtml, /Nastavení domácnosti/);
+  assert.match(settingsHtml, /Český IBAN/);
+
   const add = await fetch(`${base}/expenses`, {
     method: 'POST', redirect: 'manual', headers: {
       cookie: admin.cookie, 'content-type': 'application/x-www-form-urlencoded'
