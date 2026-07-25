@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { createServer } = require('../src/app');
 const { splitWeighted } = require('../src/utils');
+const { openDatabase, audit } = require('../src/db');
+const { calculatorData, generateCalculatorMonth } = require('../src/calculator');
 
 function config() {
   return {
@@ -39,6 +41,26 @@ test('vážené dělení zachová přesně haléře', () => {
   const result = splitWeighted(10000, [{ id: 1, weight: 1 }, { id: 2, weight: 1 }, { id: 3, weight: 1 }]);
   assert.equal(result.reduce((sum, x) => sum + x.amount, 0), 10000);
   assert.deepEqual(result.map((x) => x.amount), [3334, 3333, 3333]);
+});
+
+test('kalkulačka rozdělí známé náklady přesně a měsíc nevytvoří dvakrát', () => {
+  const db = openDatabase(':memory:');
+  const people = db.prepare('SELECT * FROM people ORDER BY id').all();
+  const names = ['David Zajíček', 'Anežka Tvrdá', 'Barbora Miklíčková', 'Max Hybner'];
+  const areas = [12.04, 12.04, 19.6, 22.4];
+  people.forEach((person, index) => db.prepare('UPDATE people SET name=?,private_area_m2=? WHERE id=?').run(names[index], areas[index], person.id));
+
+  const calculation = calculatorData(db, '2026-08');
+  assert.equal(calculation.totalArea, 113);
+  assert.equal(calculation.commonArea, 46.92);
+  assert.equal(calculation.lines.reduce((sum, line) => sum + line.amount_halere, 0), 3159900);
+  assert.equal(calculation.totals.reduce((sum, person) => sum + person.amount_halere, 0), 3159900);
+
+  const generated = generateCalculatorMonth(db, audit, '2026-08');
+  assert.equal(generated.expenseIds.length, 5);
+  assert.equal(db.prepare("SELECT SUM(amount_halere) AS total FROM expenses WHERE period='2026-08'").get().total, 3159900);
+  assert.throws(() => generateCalculatorMonth(db, audit, '2026-08'), /už byl/);
+  db.close();
 });
 
 test('viewer neotevře administraci, admin přidá položku a export ji obsahuje', async (t) => {
