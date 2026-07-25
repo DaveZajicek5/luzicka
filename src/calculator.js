@@ -61,6 +61,23 @@ function migrateCalculator(db) {
   if (!columns.includes('payment_group')) {
     db.exec("ALTER TABLE people ADD COLUMN payment_group TEXT NOT NULL DEFAULT ''");
   }
+  db.exec(`
+    INSERT INTO payments(person_id,period,paid_on,amount_halere,note,source_expense_id)
+    SELECT e.paid_by_person_id,e.period,e.occurred_on,e.amount_halere,
+      'Zaplaceno předem: ' || e.description,e.id
+    FROM expenses e
+    WHERE e.paid_by_person_id IS NOT NULL
+      AND e.amount_halere > 0
+      AND e.status='active'
+      AND e.template_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM calculator_runs run, json_each(run.expense_ids_json) generated
+        WHERE CAST(generated.value AS INTEGER)=e.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM payments payment WHERE payment.source_expense_id=e.id
+      )
+  `);
 }
 
 function seedCalculator(db) {
@@ -160,8 +177,10 @@ function calculatorData(db, period) {
   const generatedIds = new Set(run ? JSON.parse(run.expense_ids_json) : []);
   const adjustmentRows = db.prepare(`
     SELECT e.id,e.occurred_on,e.description,e.amount_halere,c.label AS category_label,
+      e.paid_by_person_id,payer.name AS payer_name,
       a.person_id,a.amount_halere AS allocation_halere
     FROM expenses e JOIN categories c ON c.code=e.category_code
+    LEFT JOIN people payer ON payer.id=e.paid_by_person_id
     JOIN expense_allocations a ON a.expense_id=e.id
     WHERE e.period=? AND e.status='active'
     ORDER BY e.occurred_on,e.id,a.person_id
@@ -174,6 +193,8 @@ function calculatorData(db, period) {
       category_label: row.category_label,
       occurred_on: row.occurred_on,
       amount_halere: row.amount_halere,
+      paid_by_person_id: row.paid_by_person_id,
+      payer_name: row.payer_name,
       allocation_rule: 'adjustment',
       allocations: []
     });
