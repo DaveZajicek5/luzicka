@@ -102,6 +102,13 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   const { server, base } = await start();
   t.after(() => server.close());
 
+  const cssResponse = await fetch(`${base}/app.css?v=20260725-4`);
+  const css = await cssResponse.text();
+  assert.equal(cssResponse.status, 200);
+  assert.match(css, /\.topbar a\s*\{[^}]*color:\s*#fff/);
+  assert.match(css, /button,\s*\.button\s*\{[^}]*display:\s*inline-flex/);
+  assert.match(css, /\.form-grid\s*\{[^}]*display:\s*grid/);
+
   const viewer = await login(base, 'viewer-pass');
   assert.equal(viewer.response.status, 303);
   const denied = await fetch(`${base}/admin`, { headers: { cookie: viewer.cookie }, redirect: 'manual' });
