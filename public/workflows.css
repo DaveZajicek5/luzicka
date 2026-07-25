@@ -110,3 +110,59 @@
   .audit-time{grid-column:1/-1}
   .void-form{flex-direction:column}
 }
+
+.reminder-group{display:flex;gap:12px;align-items:flex-start;margin:0 0 16px;padding:13px 15px;border:1px solid #ecd6a5;border-radius:11px;background:#fff9eb;color:#654811}
+.reminder-icon{width:24px;height:24px;flex:0 0 24px;display:grid;place-items:center;border-radius:50%;background:#e5b94c;color:#3f2c08;font-weight:900}
+.reminder-group strong{display:block;font-size:.86rem}
+.reminder-group ul{margin:3px 0 0;padding-left:18px;font-size:.82rem}
+.pending-summary{padding:22px;background:#fff;border:1px solid var(--line);border-radius:14px;text-align:center;box-shadow:0 5px 18px #17271e0a}
+.pending-summary-icon{width:42px;height:42px;margin:0 auto 12px;display:grid;place-items:center;border-radius:50%;background:#eef3ef}
+.pending-summary h2{margin:0;font-size:1.08rem}
+.pending-summary p{margin:7px 0 16px;color:var(--muted);font-size:.84rem;line-height:1.55}
+.pending-summary .button{width:100%}
+
+.admin-page-head{margin-bottom:18px}
+.admin-tasks{max-width:820px;padding:0;overflow:hidden}
+.admin-tasks-head{padding:18px 20px 14px;border-bottom:1px solid var(--line)}
+.admin-tasks-head h2{margin:0;font-size:1.05rem}
+.admin-tasks-head p{margin:3px 0 0;color:var(--muted);font-size:.82rem}
+.task-row{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr) auto 18px;gap:12px;align-items:center;padding:15px 18px;border-bottom:1px solid var(--line);color:var(--ink);text-decoration:none}
+.task-row:last-child{border-bottom:0}
+.task-row:hover{background:#f7faf8}
+.task-row-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:9px;background:#edf3ef;color:var(--accent);font-weight:850}
+.task-row-copy{display:flex;flex-direction:column;min-width:0}
+.task-row-copy strong{font-size:.94rem}
+.task-row-copy small{color:var(--muted);font-size:.78rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.task-row-status{color:var(--muted);font-size:.72rem;white-space:nowrap}
+.task-row-arrow{color:#8b978f;font-size:1.55rem;line-height:1}
+.task-row-primary{background:#f2f7f4}
+.task-row-primary .task-row-icon{background:var(--accent);color:#fff}
+.task-row-primary .task-row-status{color:var(--accent);font-weight:800}
+.admin-settings-links{max-width:820px;margin-top:24px}
+.admin-settings-links h2{margin:0 0 9px;font-size:.86rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.admin-settings-links>div{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.admin-settings-links a{display:flex;flex-direction:column;padding:13px 14px;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--ink);text-decoration:none}
+.admin-settings-links a:hover{border-color:#9fc4af}
+.admin-settings-links strong{font-size:.84rem}
+.admin-settings-links span{margin-top:2px;color:var(--muted);font-size:.72rem}
+
+.audit-list{position:relative}
+.audit-entry{grid-template-columns:14px minmax(0,1fr) 180px;gap:3px 12px;align-items:center;padding:15px 18px}
+.audit-marker{width:9px;height:9px;border-radius:50%;background:#7aa28b;box-shadow:0 0 0 4px #edf3ef}
+.audit-copy strong{font-size:.9rem}
+.audit-copy span{font-size:.78rem}
+.audit-time{text-align:right;font-size:.72rem}
+.audit-entry details{grid-column:2/-1}
+.audit-entry details[open]{margin-top:8px}
+.audit-entry summary{font-size:.74rem}
+.audit-entry code{max-width:none;max-height:280px;overflow:auto}
+
+@media(max-width:700px){
+  .task-row{grid-template-columns:34px minmax(0,1fr) 14px}
+  .task-row-status{grid-column:2;font-size:.69rem}
+  .task-row-arrow{grid-column:3;grid-row:1/3}
+  .admin-settings-links>div{grid-template-columns:1fr}
+  .audit-entry{grid-template-columns:14px minmax(0,1fr)}
+  .audit-time{grid-column:2;text-align:left}
+  .audit-entry details{grid-column:2}
+}
