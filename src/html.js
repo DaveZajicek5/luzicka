@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  escapeHtml, formatMoney, formatDecimal, periodLabel, currentPeriod, nextPeriod
+  escapeHtml, formatMoney, formatMoneyInput, formatDecimal, periodLabel, currentPeriod, nextPeriod
 } = require('./utils');
 
 function layout({ title, body, session, config, period, message, error, print = false }) {
@@ -22,7 +22,7 @@ function layout({ title, body, session, config, period, message, error, print = 
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>${escapeHtml(title)} · ${escapeHtml(config.householdName)}</title>
-  <link rel="stylesheet" href="/app.css?v=20260725-4">
+  <link rel="stylesheet" href="/app.css?v=20260725-5">
 </head>
 <body class="${print ? 'print-view' : ''}">
 ${nav}
@@ -31,6 +31,16 @@ ${message ? `<div class="notice success">${escapeHtml(message)}</div>` : ''}
 ${error ? `<div class="notice error">${escapeHtml(error)}</div>` : ''}
 ${body}
 </main>
+<script>
+document.addEventListener('blur', function (event) {
+  if (!event.target.matches('[data-money]')) return;
+  var raw = event.target.value.replace(/[\\s\\u00a0\\u202f]/g, '').replace(',', '.');
+  if (!/^-?\\d+(\\.\\d{0,2})?$/.test(raw)) return;
+  event.target.value = new Intl.NumberFormat('cs-CZ', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: true
+  }).format(Number(raw));
+}, true);
+</script>
 </body>
 </html>`;
 }
@@ -188,9 +198,9 @@ function oneOffForm({ session, people, categories, period }) {
       <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
       <div class="form-grid"><label>Datum úhrady<input type="date" name="occurred_on" value="${new Date().toISOString().slice(0, 10)}" required></label><label>Zaúčtovat do měsíce<input type="month" name="period" value="${escapeHtml(period)}" required><span class="muted small">Výchozí je příští měsíc.</span></label></div>
       <label>Co to bylo<input name="description" required placeholder="Např. čisticí prostředky"></label>
-      <div class="form-grid"><label>Částka v Kč<input name="amount" inputmode="decimal" required placeholder="Např. 1250,50"></label><label>Kategorie<select name="category_code">${categoryOptions}</select></label></div>
-      <label>Zaplatil/a<select name="paid_by_person_id"><option value="">Neuvádět</option>${personOptions}</select></label>
-      <fieldset><legend>Mezi koho náklad rozdělit</legend><div class="checks">${peopleChecks}</div></fieldset>
+      <div class="form-grid"><label>Částka v Kč<input name="amount" data-money inputmode="decimal" required placeholder="Např. 1 250,50"></label><label>Kategorie<select name="category_code">${categoryOptions}</select></label></div>
+      <label class="payer-field">Zaplatil/a předem<select name="paid_by_person_id"><option value="">Nikdo / neuvádět</option>${personOptions}</select><span class="muted small">Plátci automaticky odečteme celou uhrazenou částku.</span></label>
+      <fieldset><legend>Mezi koho náklad rozdělit</legend><div class="checks">${peopleChecks}</div><p class="muted small field-help">Plátce ponechte zaškrtnutého, pokud má nést i svůj vlastní podíl. Ostatní zaplatí jen své poměrné části.</p></fieldset>
       <label>Účtenka nebo faktura <span class="optional">(volitelné)</span><input type="file" name="attachment" accept=".pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic"><span class="muted small">PDF nebo fotografie, maximálně 10 MB</span></label>
       <input type="hidden" name="entry_type" value="charge">
       <button>Zařadit do vyúčtování</button>
@@ -216,18 +226,24 @@ function adminPage({ config, session, people, categories, templates, readings, c
   const readingRows = readings.map((r) => `<tr class="${r.status === 'void' ? 'void' : ''}"><td>${escapeHtml(r.read_on)}</td><td>${r.meter_type === 'electricity' ? 'Elektřina' : 'Plyn'}</td><td>${formatDecimal(r.value)} ${escapeHtml(r.unit)}</td><td>${escapeHtml(r.note || '—')}</td><td>${r.status === 'active' ? `<form method="post" action="/meters/${r.id}/void"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><input class="compact" name="reason" placeholder="Důvod" required><button class="danger-button">Storno</button></form>` : 'stornováno'}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">Žádné odečty.</td></tr>';
 
   const rules = [['equal', 'Stejně na osobu'], ['area_common', 'Podle pokojů'], ['private_area', 'Podle plochy pokoje'], ['weights', 'Podle vah']];
-  const recurringRows = costRules.map((rule) => `<tr class="${rule.active ? '' : 'void'}"><td colspan="4"><form method="post" action="/cost-rules/${escapeHtml(rule.code)}" class="rule-row">
-    <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><input name="label" value="${escapeHtml(rule.label)}" required>
-    <input name="amount" value="${(rule.amount_halere / 100).toFixed(2)}" inputmode="decimal" required>
-    <select name="allocation_rule">${rules.map(([value, label]) => `<option value="${value}" ${rule.allocation_rule === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
-    <div class="actions"><button>Uložit</button>${rule.active ? `<button class="danger-button" formaction="/cost-rules/${escapeHtml(rule.code)}/deactivate">Odebrat</button>` : `<button class="secondary" formaction="/cost-rules/${escapeHtml(rule.code)}/activate">Obnovit</button>`}</div>
-  </form></td></tr>`).join('');
+  const recurringRows = costRules.map((rule) => {
+    const ruleLabel = rules.find(([value]) => value === rule.allocation_rule)?.[1] || rule.allocation_rule;
+    return `<tr class="${rule.active ? '' : 'rule-inactive'}"><td colspan="4"><details class="rule-editor">
+      <summary><strong>${escapeHtml(rule.label)}</strong><span class="number">${formatMoney(rule.amount_halere)}</span><span>${escapeHtml(ruleLabel)}</span><span class="rule-edit-label">${rule.active ? 'Upravit' : 'Neaktivní · upravit'}</span></summary>
+      <form method="post" action="/cost-rules/${escapeHtml(rule.code)}" class="rule-row">
+        <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><label>Název<input name="label" value="${escapeHtml(rule.label)}" required></label>
+        <label>Částka v Kč<input name="amount" data-money value="${escapeHtml(formatMoneyInput(rule.amount_halere))}" inputmode="decimal" required></label>
+        <label>Rozdělení<select name="allocation_rule">${rules.map(([value, label]) => `<option value="${value}" ${rule.allocation_rule === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+        <div class="actions rule-actions"><button>Uložit změny</button>${rule.active ? `<button class="danger-button" formaction="/cost-rules/${escapeHtml(rule.code)}/deactivate">Odebrat</button>` : `<button class="secondary" formaction="/cost-rules/${escapeHtml(rule.code)}/activate">Obnovit</button>`}</div>
+      </form>
+    </details></td></tr>`;
+  }).join('');
   const oneOff = oneOffForm({ session, people, categories, period: nextPeriod(currentPeriod()) });
   const payments = `<article class="panel focused-form"><div class="task-heading"><span>✓</span><div><h2>Zapsat přijatou platbu</h2><p>Platba sníží zůstatek vybraného měsíce; nemění samotné náklady.</p></div></div><form method="post" action="/payments" class="stack">
       <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
       <label>Osoba<select name="person_id">${personOptions}</select></label>
       <div class="form-grid"><label>Datum<input type="date" name="paid_on" required></label><label>Měsíc, proti kterému platba jde<input type="month" name="period" required></label></div>
-      <label>Částka v Kč<input name="amount" inputmode="decimal" required></label><label>Poznámka<input name="note" placeholder="Nájem srpen"></label>
+      <label>Částka v Kč<input name="amount" data-money inputmode="decimal" required placeholder="Např. 12 500,00"></label><label>Poznámka<input name="note" placeholder="Nájem srpen"></label>
       <button>Potvrdit přijetí platby</button>
     </form></article>`;
   const meters = `<article class="panel focused-form"><div class="task-heading"><span>⌁</span><div><h2>Zapsat odečet</h2><p>Odečty elektřiny a plynu se pořizují každý měsíc k 1. dni.</p></div></div><form method="post" action="/meters" class="stack">
@@ -237,8 +253,8 @@ function adminPage({ config, session, people, categories, templates, readings, c
       <label>Poznámka<input name="note" placeholder="Fotografie uložena v…"></label><button>Uložit odečet</button>
     </form></article><section class="panel"><h2>Historie odečtů</h2><div class="table-wrap"><table><thead><tr><th>Datum</th><th>Typ</th><th>Stav</th><th>Poznámka</th><th></th></tr></thead><tbody>${readingRows}</tbody></table></div></section>`;
   const recurring = `<section class="panel"><div class="panel-head"><div><h2>Pravidelné náklady</h2><p class="muted small">Tyto položky se automaticky objeví v návrhu každého měsíce.</p></div><a class="button secondary" href="/calculator/settings">Pokoje a další nastavení</a></div>
-    <div class="table-wrap"><table><thead><tr><th>Název</th><th>Částka</th><th>Rozdělení</th><th></th></tr></thead><tbody>${recurringRows}</tbody></table></div>
-    <details class="add-rule"><summary>＋ Přidat pravidelný náklad</summary><form method="post" action="/cost-rules" class="form-grid"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><label>Název<input name="label" required></label><label>Částka v Kč<input name="amount" required></label><label>Rozdělení<select name="allocation_rule">${rules.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><button>Přidat</button></form></details>
+    <div class="table-wrap"><table class="recurring-table"><thead><tr><th>Název</th><th>Částka</th><th>Rozdělení</th><th></th></tr></thead><tbody>${recurringRows}</tbody></table></div>
+    <details class="add-rule"><summary>＋ Přidat pravidelný náklad</summary><form method="post" action="/cost-rules" class="form-grid"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><label>Název<input name="label" required></label><label>Částka v Kč<input name="amount" data-money inputmode="decimal" required placeholder="Např. 2 500,00"></label><label>Rozdělení<select name="allocation_rule">${rules.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><button>Přidat</button></form></details>
   </section>`;
   const residents = `<section class="panel"><div class="panel-head"><div><h2>Obyvatelé</h2><p class="muted small">Běžně není potřeba měnit. Plochy pokojů jsou v nastavení domácnosti.</p></div></div><div class="table-wrap"><table><thead><tr><th>Jméno</th><th>Váha</th><th>Stav</th><th>Správce</th><th></th></tr></thead><tbody>${peopleRows}</tbody></table></div></section>`;
   const home = `<section class="panel admin-tasks">
@@ -270,7 +286,7 @@ function calculatorPage({ config, session, period, data, message, error }) {
   const totalCosts = allLines.reduce((sum, line) => sum + line.amount_halere, 0);
   const header = data.totals.map((person) => `<th>${escapeHtml(person.name.split(' ')[0])}</th>`).join('');
   const rows = allLines.map((line) => `<tr class="${line.allocation_rule === 'adjustment' ? 'adjustment-row' : ''}">
-    <td><strong>${escapeHtml(line.label)}</strong><small>${line.category_label ? `${escapeHtml(line.category_label)} · ` : ''}${allocationRuleLabel(line.allocation_rule)}</small></td>
+    <td><strong>${escapeHtml(line.label)}</strong><small>${line.category_label ? `${escapeHtml(line.category_label)} · ` : ''}${allocationRuleLabel(line.allocation_rule)}${line.payer_name ? ` · předem zaplatil/a ${escapeHtml(line.payer_name)}` : ''}</small></td>
     <td class="number">${formatMoney(line.amount_halere)}</td>
     ${data.totals.map((person) => {
       const amount = line.allocations.find((item) => item.personId === person.id)?.amount || 0;
@@ -291,6 +307,14 @@ function calculatorPage({ config, session, period, data, message, error }) {
     if (!group) { group = { key, names: [], amount: 0 }; grouped.push(group); }
     group.names.push(person.name);
     group.amount += person.amount_halere;
+  }
+  for (const line of data.adjustments) {
+    if (!line.paid_by_person_id || line.amount_halere <= 0) continue;
+    const payer = combinedTotals.find((person) => person.id === line.paid_by_person_id);
+    if (!payer) continue;
+    const key = payer.payment_group || `person-${payer.id}`;
+    const group = grouped.find((item) => item.key === key);
+    if (group) group.amount -= line.amount_halere;
   }
   const payers = grouped.map((group) => `<article class="payer-card">
     <span>${escapeHtml(group.names.join(' + '))}</span><strong>${formatMoney(group.amount)}</strong>
