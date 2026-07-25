@@ -26,6 +26,7 @@ const {
 } = require('./html');
 
 const CSS = Buffer.concat([
+  fs.readFileSync(path.join(__dirname, '..', 'public', 'foundation.css')),
   fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css')),
   fs.readFileSync(path.join(__dirname, '..', 'public', 'calculator.css')),
   fs.readFileSync(path.join(__dirname, '..', 'public', 'adjustments.css')),
