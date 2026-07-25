@@ -9,7 +9,7 @@ const querystring = require('node:querystring');
 const QRCode = require('qrcode');
 const { formidable } = require('formidable');
 const {
-  openDatabase, audit, listPeople, listCategories, addExpense, generateRecurring, transferCredit, monthData
+  openDatabase, audit, listPeople, listCategories, addExpense, voidExpense, generateRecurring, transferCredit, monthData
 } = require('./db');
 const {
   createSession, readSession, sessionCookie, clearCookie, roleForPassword, isPrivateAddress
@@ -431,11 +431,8 @@ function createServer(config) {
         const id = Number(expenseVoid[1]);
         const reason = String(body.reason || '').trim();
         if (!reason) throw new Error('Uveďte důvod storna.');
-        const result = db.prepare("UPDATE expenses SET status='void',voided_at=CURRENT_TIMESTAMP,void_reason=? WHERE id=? AND status='active'").run(reason, id);
-        if (!result.changes) throw new Error('Položka už je stornovaná nebo neexistuje.');
-        audit(db, 'void', 'expense', id, { reason });
-        db.prepare('DELETE FROM statement_confirmations WHERE period=?').run(body.period || currentPeriod());
-        return redirect(res, `/?period=${encodeURIComponent(body.period || currentPeriod())}&message=${encodeURIComponent('Položka byla stornována.')}`);
+        const result = voidExpense(db, id, reason);
+        return redirect(res, `/?period=${encodeURIComponent(result.period)}&message=${encodeURIComponent('Položka a související zápočet platby byly stornovány.')}`);
       }
 
       if (req.method === 'POST' && pathname === '/payments') {
