@@ -8,7 +8,7 @@ function layout({ title, body, session, config, period, message, error, print = 
       <a class="brand" href="/?period=${escapeHtml(period || '')}">${escapeHtml(config.householdName)}</a>
       <nav>
         <a href="/?period=${escapeHtml(period || '')}">Přehled</a>
-        ${session.role === 'admin' ? '<a href="/calculator">Kalkulačka</a><a href="/admin">Správa</a><a href="/audit">Audit</a>' : ''}
+        ${session.role === 'admin' ? '<a href="/calculator">Nájmy</a><a href="/admin">Správa</a><a href="/audit">Audit</a>' : ''}
         <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><button class="link-button">Odhlásit</button></form>
       </nav>
     </header>` : '';
@@ -169,6 +169,62 @@ function weekdayOptions(selected) {
 }
 
 function calculatorPage({ config, session, period, data, message, error }) {
+  const totalCosts = data.lines.reduce((sum, line) => sum + line.amount_halere, 0);
+  const header = data.totals.map((person) => `<th>${escapeHtml(person.name.split(' ')[0])}</th>`).join('');
+  const rows = data.lines.map((line) => `<tr>
+    <td><strong>${escapeHtml(line.label)}</strong><small>${allocationRuleLabel(line.allocation_rule)}</small></td>
+    <td class="number">${formatMoney(line.amount_halere)}</td>
+    ${data.totals.map((person) => {
+      const amount = line.allocations.find((item) => item.personId === person.id)?.amount || 0;
+      return `<td class="number">${formatMoney(amount)}</td>`;
+    }).join('')}
+  </tr>`).join('');
+  const totals = `<tr class="total-row"><td>Celkem za měsíc</td><td class="number">${formatMoney(totalCosts)}</td>
+    ${data.totals.map((person) => `<td class="number">${formatMoney(person.amount_halere)}</td>`).join('')}</tr>`;
+  const grouped = [];
+  for (const person of data.totals) {
+    const key = person.payment_group || `person-${person.id}`;
+    let group = grouped.find((item) => item.key === key);
+    if (!group) { group = { key, names: [], amount: 0 }; grouped.push(group); }
+    group.names.push(person.name);
+    group.amount += person.amount_halere;
+  }
+  const payers = grouped.map((group) => `<article class="payer-card">
+    <span>${escapeHtml(group.names.join(' + '))}</span><strong>${formatMoney(group.amount)}</strong>
+    <small>${group.names.length > 1 ? 'jedna společná platba' : 'samostatná platba'}</small>
+  </article>`).join('');
+  const generation = data.generated
+    ? `<div class="completion-state"><div class="completion-icon">✓</div><div><strong>Tento měsíc je zaúčtovaný</strong><p>Částky už jsou v účtech nájemníků. Další změny nastavení ovlivní až nový měsíc.</p></div><a class="button secondary" href="/?period=${escapeHtml(period)}">Otevřít přehled</a></div>`
+    : `<form method="post" action="/calculator/generate" class="primary-action">
+        <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><input type="hidden" name="period" value="${escapeHtml(period)}">
+        <div><span class="eyebrow">Poslední krok</span><strong>Zaúčtovat ${formatMoney(totalCosts)}</strong><p>Vytvoří se ${data.lines.length} položek a připíšou se částky nájemníkům.</p></div>
+        <button>Zaúčtovat ${escapeHtml(periodLabel(period))}</button>
+      </form>`;
+  const body = `
+    <section class="page-head compact-head">
+      <div><div class="eyebrow">Měsíční předpis</div><h1>${escapeHtml(periodLabel(period))}</h1><p class="muted">Zkontrolujte rozdělení a potom měsíc zaúčtujte.</p></div>
+      <div class="page-actions"><a class="button secondary" href="/calculator/settings?period=${escapeHtml(period)}">Upravit nastavení</a>
+      <form method="get" action="/calculator" class="period-picker"><label>Měsíc<input type="month" name="period" value="${escapeHtml(period)}"></label><button>Zobrazit</button></form></div>
+    </section>
+    <section class="billing-hero"><div><span>Celkem domácnost</span><strong>${formatMoney(totalCosts)}</strong><small>${data.lines.length} pravidelných nákladů</small></div><div class="payer-grid">${payers}</div></section>
+    <section class="panel">
+      <div class="panel-head"><div><h2>Kontrola rozdělení</h2><p class="muted small">Každý řádek ukazuje celkový náklad a přesný podíl každého obyvatele.</p></div></div>
+      <div class="table-wrap allocation-matrix"><table><thead><tr><th>Náklad</th><th>Celkem</th>${header}</tr></thead><tbody>${rows}${totals}</tbody></table></div>
+    </section>
+    <section class="panel action-panel">${generation}</section>`;
+  return layout({ title: 'Měsíční předpis', body, session, config, period, message, error });
+}
+
+function allocationRuleLabel(rule) {
+  return ({
+    equal: 'stejně na osobu',
+    area_common: 'pokoj + společné prostory',
+    private_area: 'podle pokoje',
+    weights: 'podle vah'
+  })[rule] || rule;
+}
+
+function calculatorSettingsPage({ config, session, period, data, message, error }) {
   const rules = [
     ['equal', 'Stejně na osobu'],
     ['area_common', 'Pokoj + stejný díl společných prostor'],
@@ -187,51 +243,32 @@ function calculatorPage({ config, session, period, data, message, error }) {
     <label>${escapeHtml(cost.label)}<input name="cost_amount_${escapeHtml(cost.code)}" inputmode="decimal" value="${(cost.amount_halere / 100).toFixed(2)}" required></label>
     <label>Rozdělení<select name="cost_rule_${escapeHtml(cost.code)}">${ruleOptions(cost.allocation_rule)}</select></label>
   </div>`).join('');
-  const totalCosts = data.lines.reduce((sum, line) => sum + line.amount_halere, 0);
-  const preview = data.totals.map((person) => {
-    const details = data.lines.map((line) => {
-      const amount = line.allocations.find((item) => item.personId === person.id)?.amount || 0;
-      return `<li><span>${escapeHtml(line.label)}</span><strong>${formatMoney(amount)}</strong></li>`;
-    }).join('');
-    return `<article class="metric-card">
-      <div class="metric-name">${escapeHtml(person.name)}</div>
-      <div class="metric-value">${formatMoney(person.amount_halere)}</div>
-      <div class="metric-label">měsíční předpis</div>
-      <ul class="allocation-list">${details}</ul>
-    </article>`;
-  }).join('');
-  const generation = data.generated
-    ? `<div class="notice success">Předpis pro ${escapeHtml(periodLabel(period))} už byl vytvořen. Znovu jej vytvořit nelze, aby nevznikly duplicity.</div>`
-    : `<form method="post" action="/calculator/generate" class="generate-box">
-        <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
-        <input type="hidden" name="period" value="${escapeHtml(period)}">
-        <div><strong>Zaúčtovat tento návrh</strong><p class="muted small">Vznikne pět pevných položek a částky se propíšou do účtů nájemníků.</p></div>
-        <button>Vytvořit předpis pro ${escapeHtml(periodLabel(period))}</button>
-      </form>`;
   const body = `
     <section class="page-head">
-      <div><div class="eyebrow">Rozpočítání nájmu</div><h1>Kalkulačka domácnosti</h1><p class="muted">Nejdřív upravte pravidla a uložte náhled. Teprve potom jej jedním tlačítkem zaúčtujte.</p></div>
-      <form method="get" action="/calculator" class="period-picker"><label>Měsíc<input type="month" name="period" value="${escapeHtml(period)}"></label><button>Zobrazit</button></form>
+      <div><div class="eyebrow">Nastavení domácnosti</div><h1>Pravidla a údaje</h1><p class="muted">Tyto hodnoty měňte jen při změně smlouvy, cen, pokoje nebo svozu.</p></div>
+      <a class="button secondary" href="/calculator?period=${escapeHtml(period)}">← Zpět na měsíční předpis</a>
     </section>
-    <section class="calculator-layout">
-      <article class="panel calculator-settings">
-        <h2>Vstupy a pravidla</h2>
+    <section class="settings-shell">
+      <aside class="settings-summary">
+        <span>Byt</span><strong>${formatDecimal(data.totalArea, 2)} m²</strong>
+        <dl><div><dt>Pokoje</dt><dd>${formatDecimal(data.privateArea, 2)} m²</dd></div><div><dt>Společné</dt><dd>${formatDecimal(data.commonArea, 2)} m²</dd></div></dl>
+        <p>Změny se nejdřív projeví v náhledu. Již zaúčtované měsíce zůstanou beze změny.</p>
+      </aside>
+      <article class="panel settings-form">
         <form method="post" action="/calculator/settings" class="stack">
           <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
           <input type="hidden" name="period" value="${escapeHtml(period)}">
-          <div class="area-summary">
-            <label>Celková plocha bytu<input type="number" min="1" step="0.01" name="total_area_m2" value="${escapeHtml(data.totalArea)}" required></label>
-            <div><span>Soukromé pokoje</span><strong>${formatDecimal(data.privateArea, 2)} m²</strong></div>
-            <div><span>Společná plocha</span><strong>${formatDecimal(data.commonArea, 2)} m²</strong></div>
-          </div>
-          <fieldset><legend>Pokoje a jejich obyvatelé</legend><div class="stack">${roomInputs}</div><p class="muted small">U společného pokoje se plocha dělí mezi Davida a Anežku napůl.</p></fieldset>
-          <fieldset><legend>Měsíční náklady a způsob rozdělení</legend><div class="stack">${costInputs}</div></fieldset>
-          <fieldset><legend>QR platby na účet správce</legend>
+          <section class="settings-section"><div class="section-heading"><span>1</span><div><h2>Pokoje</h2><p>Rozměry určují podíl na nájmu.</p></div></div>
+            <label class="short-field">Celková plocha bytu (m²)<input type="number" min="1" step="0.01" name="total_area_m2" value="${escapeHtml(data.totalArea)}" required></label>
+            <div class="stack">${roomInputs}</div><p class="muted small">Společný pokoj se mezi Davida a Anežku rozdělí napůl.</p>
+          </section>
+          <section class="settings-section"><div class="section-heading"><span>2</span><div><h2>Pravidelné náklady</h2><p>Částka a pravidlo rozdělení pro každý měsíc.</p></div></div><div class="stack">${costInputs}</div></section>
+          <section class="settings-section"><div class="section-heading"><span>3</span><div><h2>Platby</h2><p>Účet pro QR kódy a termín splatnosti.</p></div></div>
             <div class="form-grid"><label>Český IBAN<input name="payment_iban" value="${escapeHtml(data.paymentIban)}" placeholder="CZ6508000000192000145399"></label>
             <label>Den splatnosti<input type="number" min="1" max="28" name="payment_due_day" value="${escapeHtml(data.paymentDueDay)}" required></label></div>
-            <p class="muted small">IBAN zůstává jen v této aplikaci. Bez něj se platební QR kódy nezobrazí.</p>
-          </fieldset>
-          <fieldset><legend>Svoz odpadu – ruční nastavení po vypozorování</legend>
+            <p class="muted small">David a Anežka mají jednu společnou platbu. IBAN zůstává jen v této aplikaci.</p>
+          </section>
+          <details class="settings-section"><summary><span class="section-number">4</span><div><h2>Svoz odpadu</h2><p>Volitelné – nastavíme, až vypozorujete pravidelnost.</p></div></summary>
             <div class="waste-grid">
               <strong>Směsný odpad</strong>
               <label>Den<select name="waste_mixed_weekday">${weekdayOptions(data.wasteMixedWeekday)}</select></label>
@@ -242,17 +279,12 @@ function calculatorPage({ config, session, period, data, message, error }) {
               <label>Každých<input type="number" min="1" max="8" name="waste_sorted_interval_weeks" value="${escapeHtml(data.wasteSortedIntervalWeeks)}"> týdnů</label>
               <label>Známé datum svozu<input type="date" name="waste_sorted_anchor_date" value="${escapeHtml(data.wasteSortedAnchorDate)}"></label>
             </div>
-          </fieldset>
-          <button>Uložit a přepočítat náhled</button>
+          </details>
+          <div class="save-bar"><a href="/calculator?period=${escapeHtml(period)}">Zrušit</a><button>Uložit změny a přepočítat</button></div>
         </form>
       </article>
-      <div>
-        <article class="panel calculator-total"><span>Celkové měsíční náklady</span><strong>${formatMoney(totalCosts)}</strong><small>Součet všech pěti položek</small></article>
-        <section class="metrics calculator-preview">${preview}</section>
-        <article class="panel">${generation}</article>
-      </div>
     </section>`;
-  return layout({ title: 'Kalkulačka', body, session, config, period, message, error });
+  return layout({ title: 'Nastavení domácnosti', body, session, config, period, message, error });
 }
 
 function auditPage({ config, session, entries }) {
@@ -266,4 +298,4 @@ function printPage({ config, period, data }) {
   return layout({ print: true, title: `Přehled ${period}`, config, body: `<section class="print-head"><div><h1>${escapeHtml(config.householdName)}</h1><p>Měsíční rozúčtování · ${escapeHtml(periodLabel(period))}</p></div><button onclick="window.print()">Vytisknout / uložit PDF</button></section><h2>Souhrn osob</h2><table><thead><tr><th>Osoba</th><th>Předepsáno</th><th>Zaplaceno</th><th>Zbývá</th></tr></thead><tbody>${summary}</tbody></table><h2>Položky</h2><table><thead><tr><th>Datum</th><th>Kategorie</th><th>Popis</th><th>Rozdělení</th><th>Celkem</th></tr></thead><tbody>${rows}</tbody></table><p class="print-total">Celkové náklady: ${formatMoney(data.totalHalere)}</p>` });
 }
 
-module.exports = { layout, loginPage, dashboardPage, adminPage, auditPage, printPage, calculatorPage };
+module.exports = { layout, loginPage, dashboardPage, adminPage, auditPage, printPage, calculatorPage, calculatorSettingsPage };
