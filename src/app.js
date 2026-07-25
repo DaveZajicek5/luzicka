@@ -20,7 +20,10 @@ const {
 const {
   calculatorData, saveCalculatorSettings, generateCalculatorMonth, getSetting
 } = require('./calculator');
-const { loginPage, dashboardPage, adminPage, auditPage, printPage, calculatorPage } = require('./html');
+const {
+  loginPage, dashboardPage, adminPage, auditPage, printPage,
+  calculatorPage, calculatorSettingsPage
+} = require('./html');
 
 const CSS = Buffer.concat([
   fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css')),
@@ -157,6 +160,15 @@ function createServer(config) {
         const session = requireSession(req, res, true); if (!session) return;
         const period = isPeriod(url.searchParams.get('period')) ? url.searchParams.get('period') : currentPeriod();
         return send(res, 200, calculatorPage({
+          config, session, period, data: calculatorData(db, period),
+          message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
+        }));
+      }
+
+      if (req.method === 'GET' && pathname === '/calculator/settings') {
+        const session = requireSession(req, res, true); if (!session) return;
+        const period = isPeriod(url.searchParams.get('period')) ? url.searchParams.get('period') : currentPeriod();
+        return send(res, 200, calculatorSettingsPage({
           config, session, period, data: calculatorData(db, period),
           message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
         }));
