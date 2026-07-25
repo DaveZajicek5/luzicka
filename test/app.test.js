@@ -6,7 +6,7 @@ const { once } = require('node:events');
 const { createServer } = require('../src/app');
 const { splitWeighted } = require('../src/utils');
 const { openDatabase, audit } = require('../src/db');
-const { calculatorData, generateCalculatorMonth } = require('../src/calculator');
+const { calculatorData, generateCalculatorMonth, reopenCalculatorMonth } = require('../src/calculator');
 
 function config() {
   return {
@@ -72,6 +72,10 @@ test('kalkulačka rozdělí známé náklady přesně a měsíc nevytvoří dvak
   assert.equal(generated.expenseIds.length, 6);
   assert.equal(db.prepare("SELECT SUM(amount_halere) AS total FROM expenses WHERE period='2026-08'").get().total, 3182900);
   assert.throws(() => generateCalculatorMonth(db, audit, '2026-08'), /už byl/);
+  const reopened = reopenCalculatorMonth(db, audit, '2026-08', 'Test opravy');
+  assert.equal(reopened.voided, 6);
+  assert.equal(calculatorData(db, '2026-08').generated, false);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM expenses WHERE period='2026-08' AND status='active'").get().count, 0);
   db.close();
 });
 
