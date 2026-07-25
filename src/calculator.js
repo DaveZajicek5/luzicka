@@ -40,6 +40,19 @@ function migrateCalculator(db) {
       original_name TEXT NOT NULL,stored_name TEXT NOT NULL,mime_type TEXT NOT NULL,size_bytes INTEGER NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS statement_confirmations (
+      period TEXT NOT NULL,person_id INTEGER NOT NULL REFERENCES people(id),
+      confirmed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(period,person_id)
+    );
+    CREATE TABLE IF NOT EXISTS credit_transfers (
+      source_period TEXT NOT NULL,target_period TEXT NOT NULL,
+      person_id INTEGER NOT NULL REFERENCES people(id),amount_halere INTEGER NOT NULL,
+      source_expense_id INTEGER NOT NULL REFERENCES expenses(id),
+      target_expense_id INTEGER NOT NULL REFERENCES expenses(id),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(source_period,person_id)
+    );
   `);
   const columns = db.prepare('PRAGMA table_info(people)').all().map((column) => column.name);
   if (!columns.includes('private_area_m2')) {
@@ -90,6 +103,7 @@ function getSetting(db, key, fallback = '') {
 }
 
 function calculatorData(db, period) {
+  const run = db.prepare('SELECT * FROM calculator_runs WHERE period=?').get(period);
   const people = db.prepare('SELECT * FROM people WHERE active=1 ORDER BY id').all();
   const rooms = db.prepare(`SELECT r.*,GROUP_CONCAT(ro.person_id) AS person_ids,
     GROUP_CONCAT(p.name, ', ') AS people_names FROM rooms r
@@ -130,13 +144,44 @@ function calculatorData(db, period) {
     }
     return { ...cost, allocations: splitWeighted(cost.amount_halere, weighted) };
   });
-  const totals = people.map((person) => ({
+  let totals = people.map((person) => ({
     ...person,
     amount_halere: lines.reduce((sum, line) =>
       sum + (line.allocations.find((item) => item.personId === person.id)?.amount || 0), 0)
   }));
+  let displayLines = lines;
+  if (run) {
+    try {
+      const snapshot = JSON.parse(run.snapshot_json);
+      displayLines = snapshot.lines || lines;
+      totals = snapshot.totals || totals;
+    } catch {}
+  }
+  const generatedIds = new Set(run ? JSON.parse(run.expense_ids_json) : []);
+  const adjustmentRows = db.prepare(`
+    SELECT e.id,e.occurred_on,e.description,e.amount_halere,c.label AS category_label,
+      a.person_id,a.amount_halere AS allocation_halere
+    FROM expenses e JOIN categories c ON c.code=e.category_code
+    JOIN expense_allocations a ON a.expense_id=e.id
+    WHERE e.period=? AND e.status='active'
+    ORDER BY e.occurred_on,e.id,a.person_id
+  `).all(period).filter((row) => !generatedIds.has(row.id));
+  const adjustmentMap = new Map();
+  for (const row of adjustmentRows) {
+    if (!adjustmentMap.has(row.id)) adjustmentMap.set(row.id, {
+      id: row.id,
+      label: row.description,
+      category_label: row.category_label,
+      occurred_on: row.occurred_on,
+      amount_halere: row.amount_halere,
+      allocation_rule: 'adjustment',
+      allocations: []
+    });
+    adjustmentMap.get(row.id).allocations.push({ personId: row.person_id, amount: row.allocation_halere });
+  }
   return {
-    period, people, rooms, costs, lines, totals, totalArea, privateArea, commonArea,
+    period, people, rooms, costs, lines: displayLines, totals,
+    adjustments: [...adjustmentMap.values()], totalArea, privateArea, commonArea,
     paymentIban: getSetting(db, 'payment_iban', ''),
     paymentDueDay: Number(getSetting(db, 'payment_due_day', '10')),
     wasteMixedWeekday: getSetting(db, 'waste_mixed_weekday', ''),
@@ -145,7 +190,7 @@ function calculatorData(db, period) {
     wasteSortedWeekday: getSetting(db, 'waste_sorted_weekday', ''),
     wasteSortedIntervalWeeks: Number(getSetting(db, 'waste_sorted_interval_weeks', '2')),
     wasteSortedAnchorDate: getSetting(db, 'waste_sorted_anchor_date', ''),
-    generated: Boolean(db.prepare('SELECT 1 FROM calculator_runs WHERE period=?').get(period))
+    generated: Boolean(run)
   };
 }
 
@@ -218,6 +263,7 @@ function reopenCalculatorMonth(db, audit, period, reason) {
     let voided = 0;
     for (const expenseId of expenseIds) voided += voidExpense.run(reason, expenseId).changes;
     db.prepare('DELETE FROM calculator_runs WHERE period=?').run(period);
+    db.prepare('DELETE FROM statement_confirmations WHERE period=?').run(period);
     audit(db, 'reopen', 'calculator_month', null, { period, reason, expenseIds, voided });
     db.exec('COMMIT');
     return { voided };
