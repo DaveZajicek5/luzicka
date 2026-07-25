@@ -171,6 +171,7 @@ function addExpense(db, input) {
       input.templateId || null
     );
     const expenseId = Number(result.lastInsertRowid);
+    db.prepare('DELETE FROM statement_confirmations WHERE period=?').run(input.period);
     const insertAllocation = db.prepare(`INSERT INTO expense_allocations
       (expense_id,person_id,amount_halere,weight_snapshot) VALUES (?,?,?,?)`);
     for (const allocation of allocations) {
@@ -211,6 +212,38 @@ function generateRecurring(db, period) {
   return { created, skipped };
 }
 
+function transferCredit(db, sourcePeriod, targetPeriod, personId) {
+  if (db.prepare('SELECT 1 FROM credit_transfers WHERE source_period=? AND person_id=?').get(sourcePeriod, personId)) {
+    throw new Error('Tento přeplatek už byl převeden.');
+  }
+  const person = monthData(db, sourcePeriod).people.find((item) => item.id === personId);
+  if (!person || person.balance_halere >= 0) throw new Error('Osoba nemá v tomto měsíci přeplatek.');
+  const amount = -person.balance_halere;
+  const insertExpense = db.prepare(`INSERT INTO expenses
+    (occurred_on,period,category_code,description,amount_halere) VALUES (?,?,?,?,?)`);
+  const insertAllocation = db.prepare(`INSERT INTO expense_allocations
+    (expense_id,person_id,amount_halere,weight_snapshot) VALUES (?,?,?,1)`);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    let result = insertExpense.run(`${sourcePeriod}-28`, sourcePeriod, 'other', `Převod přeplatku do ${targetPeriod}`, amount);
+    const sourceExpenseId = Number(result.lastInsertRowid);
+    insertAllocation.run(sourceExpenseId, personId, amount);
+    result = insertExpense.run(`${targetPeriod}-01`, targetPeriod, 'other', `Sleva z přeplatku ${sourcePeriod}`, -amount);
+    const targetExpenseId = Number(result.lastInsertRowid);
+    insertAllocation.run(targetExpenseId, personId, -amount);
+    db.prepare(`INSERT INTO credit_transfers
+      (source_period,target_period,person_id,amount_halere,source_expense_id,target_expense_id)
+      VALUES (?,?,?,?,?,?)`).run(sourcePeriod, targetPeriod, personId, amount, sourceExpenseId, targetExpenseId);
+    db.prepare('DELETE FROM statement_confirmations WHERE period IN (?,?)').run(sourcePeriod, targetPeriod);
+    audit(db, 'transfer_credit', 'person', personId, { sourcePeriod, targetPeriod, amount, sourceExpenseId, targetExpenseId });
+    db.exec('COMMIT');
+    return { amount };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 function monthData(db, period) {
   const people = db.prepare(`
     SELECT p.id,p.name,p.active,p.is_manager,p.payment_group,
@@ -223,6 +256,9 @@ function monthData(db, period) {
     HAVING p.active=1 OR due_halere<>0 OR paid_halere<>0
     ORDER BY p.id
   `).all(period, period).map((p) => ({ ...p, balance_halere: p.due_halere - p.paid_halere }));
+  const confirmations = new Map(db.prepare('SELECT person_id,confirmed_at FROM statement_confirmations WHERE period=?').all(period)
+    .map((row) => [row.person_id, row.confirmed_at]));
+  people.forEach((person) => { person.confirmed_at = confirmations.get(person.id) || null; });
 
   const expenses = db.prepare(`
     SELECT e.*, c.label AS category_label, payer.name AS payer_name,
@@ -278,6 +314,7 @@ function monthData(db, period) {
     payments,
     categories,
     meterReadings,
+    generated: Boolean(db.prepare('SELECT 1 FROM calculator_runs WHERE period=?').get(period)),
     totalHalere: expenses.filter((e) => e.status === 'active').reduce((sum, e) => sum + e.amount_halere, 0),
     paymentEnabled: /^CZ[0-9A-Z]{22}$/.test(getSetting(db, 'payment_iban', '').replaceAll(' ', '').toUpperCase()),
     reminders: householdReminders(db, period)
@@ -291,5 +328,6 @@ module.exports = {
   listCategories,
   addExpense,
   generateRecurring,
+  transferCredit,
   monthData
 };
