@@ -29,7 +29,8 @@ const CSS = Buffer.concat([
   fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css')),
   fs.readFileSync(path.join(__dirname, '..', 'public', 'calculator.css')),
   fs.readFileSync(path.join(__dirname, '..', 'public', 'adjustments.css')),
-  fs.readFileSync(path.join(__dirname, '..', 'public', 'workflows.css'))
+  fs.readFileSync(path.join(__dirname, '..', 'public', 'workflows.css')),
+  fs.readFileSync(path.join(__dirname, '..', 'public', 'polish.css'))
 ]);
 
 function readBody(req, limit = 1024 * 1024) {
@@ -117,7 +118,7 @@ function createServer(config) {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const pathname = url.pathname;
 
-      if (req.method === 'GET' && pathname === '/app.css') return send(res, 200, CSS, 'text/css; charset=utf-8', { 'Cache-Control': 'private, max-age=3600' });
+      if (req.method === 'GET' && pathname === '/app.css') return send(res, 200, CSS, 'text/css; charset=utf-8', { 'Cache-Control': 'private, no-cache, max-age=0, must-revalidate' });
       if (req.method === 'GET' && pathname === '/health') return send(res, 200, 'ok', 'text/plain; charset=utf-8');
       if (req.method === 'GET' && pathname === '/login') {
         if (readSession(req, config)) return redirect(res, '/');
