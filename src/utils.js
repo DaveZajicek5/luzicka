@@ -61,6 +61,13 @@ function periodLabel(period) {
     .format(new Date(year, month - 1, 1));
 }
 
+function nextPeriod(period) {
+  if (!isPeriod(period)) return period;
+  const [year, month] = period.split('-').map(Number);
+  const date = new Date(year, month, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
 function splitWeighted(totalHalere, people) {
   if (!people.length) throw new Error('Vyberte alespoň jednoho obyvatele.');
   const totalWeight = people.reduce((sum, p) => sum + Number(p.weight), 0);
@@ -118,6 +125,7 @@ module.exports = {
   currentPeriod,
   isPeriod,
   isDate,
+  nextPeriod,
   periodLabel,
   splitWeighted,
   randomToken,
