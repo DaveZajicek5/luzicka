@@ -108,7 +108,7 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   assert.equal(denied.status, 403);
   const oneOff = await fetch(`${base}/one-off`, { headers: { cookie: viewer.cookie } });
   assert.equal(oneOff.status, 200);
-  assert.match(await oneOff.text(), /Jednorázový náklad/);
+  assert.match(await oneOff.text(), /Nový náklad/);
 
   const admin = await login(base, 'admin-pass');
   const adminResponse = await fetch(`${base}/admin?view=recurring`, { headers: { cookie: admin.cookie } });
@@ -170,5 +170,5 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   const auditResponse = await fetch(`${base}/audit`, { headers: { cookie: admin.cookie } });
   const auditHtml = await auditResponse.text();
   assert.match(auditHtml, /Přidán náklad/);
-  assert.match(auditHtml, /<summary>Detail<\/summary>/);
+  assert.match(auditHtml, /<summary>Zobrazit detail<\/summary>/);
 });
