@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { splitWeighted } = require('./utils');
+const { migrateCalculator, seedCalculator, getSetting } = require('./calculator');
 
 const CATEGORY_SEED = [
   ['rent', 'Nájemné', 'monthly'],
@@ -24,6 +25,8 @@ function openDatabase(databasePath) {
   db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
   migrate(db);
   seed(db);
+  migrateCalculator(db);
+  seedCalculator(db);
   return db;
 }
 
@@ -257,7 +260,8 @@ function monthData(db, period) {
     payments,
     categories,
     meterReadings,
-    totalHalere: expenses.filter((e) => e.status === 'active').reduce((sum, e) => sum + e.amount_halere, 0)
+    totalHalere: expenses.filter((e) => e.status === 'active').reduce((sum, e) => sum + e.amount_halere, 0),
+    paymentEnabled: /^CZ[0-9A-Z]{22}$/.test(getSetting(db, 'payment_iban', '').replaceAll(' ', '').toUpperCase())
   };
 }
 
