@@ -59,7 +59,8 @@ function personCards(people, period, paymentEnabled) {
       <div class="metric-value">${formatMoney(Math.abs(person.balance_halere))}</div>
       <div class="metric-label">${label}</div>
       <dl><div><dt>Předepsáno</dt><dd>${formatMoney(person.due_halere)}</dd></div><div><dt>Zaplaceno</dt><dd>${formatMoney(person.paid_halere)}</dd></div></dl>
-      ${paymentEnabled && person.balance_halere > 0 ? `<a class="button secondary payment-button" href="/payment-qr.svg?period=${escapeHtml(period)}&person=${person.id}" target="_blank">QR kód k platbě</a>` : ''}
+      ${person.payment_group_names?.includes(' + ') ? `<div class="muted small">Platba společně: ${escapeHtml(person.payment_group_names)}</div>` : ''}
+      ${paymentEnabled && person.payment_group_representative && person.payment_group_balance_halere > 0 ? `<a class="button secondary payment-button" href="/payment-qr.svg?period=${escapeHtml(period)}&person=${person.id}" target="_blank">QR kód: ${formatMoney(person.payment_group_balance_halere)}</a>` : ''}
     </article>`;
   }).join('');
 }
@@ -67,7 +68,7 @@ function personCards(people, period, paymentEnabled) {
 function dashboardPage({ config, session, period, data, message, error }) {
   const expenseRows = data.expenses.map((e) => `<tr class="${e.status === 'void' ? 'void' : ''}">
     <td>${escapeHtml(e.occurred_on)}</td><td>${escapeHtml(e.category_label)}</td>
-    <td><strong>${escapeHtml(e.description)}</strong><div class="muted small">${escapeHtml(e.allocation_text)}</div>${e.void_reason ? `<div class="danger small">Storno: ${escapeHtml(e.void_reason)}</div>` : ''}</td>
+    <td><strong>${escapeHtml(e.description)}</strong><div class="muted small">${escapeHtml(e.allocation_text)}</div>${e.attachment_count ? `<a class="small" href="/expenses/${e.id}/attachment" target="_blank">📎 Otevřít přílohu</a>` : ''}${e.void_reason ? `<div class="danger small">Storno: ${escapeHtml(e.void_reason)}</div>` : ''}</td>
     <td class="number">${formatMoney(e.amount_halere)}</td>
     <td>${escapeHtml(e.payer_name || '—')}</td>
     ${session.role === 'admin' ? `<td>${e.status === 'active' ? `<form method="post" action="/expenses/${e.id}/void" class="inline"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><input type="hidden" name="period" value="${escapeHtml(period)}"><input class="compact" name="reason" placeholder="Důvod storna" required><button class="danger-button">Storno</button></form>` : 'stornováno'}</td>` : ''}
@@ -80,12 +81,14 @@ function dashboardPage({ config, session, period, data, message, error }) {
 
   const categoryBars = data.categories.map((c) => `<div class="bar-row"><span>${escapeHtml(c.label)}</span><strong>${formatMoney(c.amount_halere)}</strong></div>`).join('') || '<p class="empty">Bez dat.</p>';
   const meterCards = data.meterReadings.map((m) => `<div class="meter"><span>${m.meter_type === 'electricity' ? 'Elektřina' : 'Plyn'}</span><strong>${formatDecimal(m.value)} ${escapeHtml(m.unit)}</strong><small>stav k ${escapeHtml(m.read_on)}</small></div>`).join('') || '<p class="empty">Zatím nebyl uložen žádný odečet.</p>';
+  const reminders = data.reminders.map((reminder) => `<div class="notice reminder">${escapeHtml(reminder)}</div>`).join('');
 
   const body = `
     <section class="page-head">
       <div><div class="eyebrow">Měsíční přehled</div><h1>${escapeHtml(periodLabel(period))}</h1><p class="muted">Celkové aktivní náklady: <strong>${formatMoney(data.totalHalere)}</strong></p></div>
       <form method="get" action="/" class="period-picker"><label>Měsíc<input type="month" name="period" value="${escapeHtml(period)}"></label><button>Zobrazit</button></form>
     </section>
+    ${reminders}
     <section class="metrics">${personCards(data.people, period, data.paymentEnabled)}</section>
     <section class="two-col">
       <article class="panel"><div class="panel-head"><h2>Struktura nákladů</h2></div>${categoryBars}</article>
@@ -105,7 +108,13 @@ function dashboardPage({ config, session, period, data, message, error }) {
 
 function adminPage({ config, session, people, categories, templates, readings, message, error }) {
   const peopleChecks = people.filter((p) => p.active).map((p) => `<label class="check"><input type="checkbox" name="person_id" value="${p.id}" checked> ${escapeHtml(p.name)} <span class="muted">(váha ${escapeHtml(p.weight)})</span></label>`).join('');
-  const personOptions = people.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  const grouped = new Set();
+  const groupOptions = people.filter((p) => p.payment_group && !grouped.has(p.payment_group) && grouped.add(p.payment_group))
+    .map((p) => {
+      const members = people.filter((member) => member.payment_group === p.payment_group);
+      return members.length > 1 ? `<option value="group:${escapeHtml(p.payment_group)}">${escapeHtml(members.map((member) => member.name).join(' + '))} (společně)</option>` : '';
+    }).join('');
+  const personOptions = groupOptions + people.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
   const categoryOptions = categories.map((c) => `<option value="${escapeHtml(c.code)}">${escapeHtml(c.label)}</option>`).join('');
   const templateRows = templates.map((t) => `<tr class="${t.active ? '' : 'void'}"><td>${escapeHtml(t.category_label)}</td><td>${escapeHtml(t.description)}</td><td>${formatMoney(t.amount_halere)}</td><td>${t.due_day}.</td><td>${escapeHtml(t.people_names)}</td><td>${t.active ? `<form method="post" action="/templates/${t.id}/deactivate"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><button class="danger-button">Deaktivovat</button></form>` : 'neaktivní'}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Zatím nejsou nastavené pravidelné položky.</td></tr>';
   const peopleRows = people.map((p) => `<tr><td><input form="person-${p.id}" name="name" value="${escapeHtml(p.name)}" required></td><td><input form="person-${p.id}" name="weight" type="number" min="0.01" step="0.01" value="${escapeHtml(p.weight)}" required></td><td><label class="check"><input form="person-${p.id}" type="checkbox" name="active" ${p.active ? 'checked' : ''}> aktivní</label></td><td>${p.is_manager ? 'ano' : '—'}</td><td><form id="person-${p.id}" method="post" action="/people/${p.id}"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><button>Uložit</button></form></td></tr>`).join('');
@@ -113,13 +122,14 @@ function adminPage({ config, session, people, categories, templates, readings, m
 
   const body = `<section class="page-head"><div><div class="eyebrow">Administrace</div><h1>Zadávání a nastavení</h1><p class="muted">Změny se zapisují do auditní stopy. Chybné finanční položky se nemažou, ale stornují.</p></div></section>
   <section class="admin-grid">
-    <article class="panel"><h2>Nový náklad / vyúčtování</h2><form method="post" action="/expenses" class="stack">
+    <article class="panel"><h2>Nový náklad / vyúčtování</h2><form method="post" action="/expenses" enctype="multipart/form-data" class="stack">
       <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
       <div class="form-grid"><label>Datum<input type="date" name="occurred_on" required></label><label>Účetní měsíc<input type="month" name="period" required></label></div>
       <label>Kategorie<select name="category_code">${categoryOptions}</select></label>
       <label>Popis<input name="description" required placeholder="Např. záloha PRE / olej do kuchyně"></label>
       <label>Částka v Kč<input name="amount" inputmode="decimal" required placeholder="Lze i záporně, např. -1250,50"></label>
       <label>Zaplatil<select name="paid_by_person_id"><option value="">Neuvádět / hrazeno správcem</option>${personOptions}</select></label>
+      <label>Příloha (volitelně)<input type="file" name="attachment" accept=".pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic"><span class="muted small">PDF nebo fotografie, maximálně 10 MB.</span></label>
       <fieldset><legend>Rozdělit mezi</legend><div class="checks">${peopleChecks}</div><p class="muted small">Použijí se aktuální váhy osob; konkrétní částky se uloží napevno do historie.</p></fieldset>
       <button>Přidat položku</button>
     </form></article>
@@ -153,6 +163,11 @@ function adminPage({ config, session, people, categories, templates, readings, m
   return layout({ title: 'Správa', body, session, config, message, error });
 }
 
+function weekdayOptions(selected) {
+  return [['', 'Zatím neznámý'], ['1', 'Pondělí'], ['2', 'Úterý'], ['3', 'Středa'], ['4', 'Čtvrtek'], ['5', 'Pátek'], ['6', 'Sobota'], ['0', 'Neděle']]
+    .map(([value, label]) => `<option value="${value}" ${String(selected) === value ? 'selected' : ''}>${label}</option>`).join('');
+}
+
 function calculatorPage({ config, session, period, data, message, error }) {
   const rules = [
     ['equal', 'Stejně na osobu'],
@@ -162,10 +177,12 @@ function calculatorPage({ config, session, period, data, message, error }) {
   ];
   const ruleOptions = (selected) => rules.map(([value, label]) =>
     `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
-  const peopleInputs = data.people.map((person) => `<label>${escapeHtml(person.name)}
-    <input type="number" min="0" step="0.01" name="person_area_${person.id}" value="${escapeHtml(person.private_area_m2)}" required>
-    <span class="muted small">m² soukromé plochy</span>
-  </label>`).join('');
+  const roomInputs = data.rooms.map((room) => `<div class="room-rule">
+    <label>Název<input name="room_name_${room.id}" value="${escapeHtml(room.name)}" required></label>
+    <label>Délka (m)<input type="number" min=".01" step=".01" name="room_length_${room.id}" value="${escapeHtml(room.length_m)}" required></label>
+    <label>Šířka (m)<input type="number" min=".01" step=".01" name="room_width_${room.id}" value="${escapeHtml(room.width_m)}" required></label>
+    <div><span>${escapeHtml(room.people_names || 'bez obyvatel')}</span><strong>${formatDecimal(room.area_m2, 2)} m²</strong></div>
+  </div>`).join('');
   const costInputs = data.costs.map((cost) => `<div class="cost-rule">
     <label>${escapeHtml(cost.label)}<input name="cost_amount_${escapeHtml(cost.code)}" inputmode="decimal" value="${(cost.amount_halere / 100).toFixed(2)}" required></label>
     <label>Rozdělení<select name="cost_rule_${escapeHtml(cost.code)}">${ruleOptions(cost.allocation_rule)}</select></label>
@@ -207,12 +224,24 @@ function calculatorPage({ config, session, period, data, message, error }) {
             <div><span>Soukromé pokoje</span><strong>${formatDecimal(data.privateArea, 2)} m²</strong></div>
             <div><span>Společná plocha</span><strong>${formatDecimal(data.commonArea, 2)} m²</strong></div>
           </div>
-          <fieldset><legend>Soukromá plocha připadající na osobu</legend><div class="form-grid">${peopleInputs}</div></fieldset>
+          <fieldset><legend>Pokoje a jejich obyvatelé</legend><div class="stack">${roomInputs}</div><p class="muted small">U společného pokoje se plocha dělí mezi Davida a Anežku napůl.</p></fieldset>
           <fieldset><legend>Měsíční náklady a způsob rozdělení</legend><div class="stack">${costInputs}</div></fieldset>
           <fieldset><legend>QR platby na účet správce</legend>
             <div class="form-grid"><label>Český IBAN<input name="payment_iban" value="${escapeHtml(data.paymentIban)}" placeholder="CZ6508000000192000145399"></label>
             <label>Den splatnosti<input type="number" min="1" max="28" name="payment_due_day" value="${escapeHtml(data.paymentDueDay)}" required></label></div>
             <p class="muted small">IBAN zůstává jen v této aplikaci. Bez něj se platební QR kódy nezobrazí.</p>
+          </fieldset>
+          <fieldset><legend>Svoz odpadu – ruční nastavení po vypozorování</legend>
+            <div class="waste-grid">
+              <strong>Směsný odpad</strong>
+              <label>Den<select name="waste_mixed_weekday">${weekdayOptions(data.wasteMixedWeekday)}</select></label>
+              <label>Každých<input type="number" min="1" max="8" name="waste_mixed_interval_weeks" value="${escapeHtml(data.wasteMixedIntervalWeeks)}"> týdnů</label>
+              <label>Známé datum svozu<input type="date" name="waste_mixed_anchor_date" value="${escapeHtml(data.wasteMixedAnchorDate)}"></label>
+              <strong>Tříděný odpad</strong>
+              <label>Den<select name="waste_sorted_weekday">${weekdayOptions(data.wasteSortedWeekday)}</select></label>
+              <label>Každých<input type="number" min="1" max="8" name="waste_sorted_interval_weeks" value="${escapeHtml(data.wasteSortedIntervalWeeks)}"> týdnů</label>
+              <label>Známé datum svozu<input type="date" name="waste_sorted_anchor_date" value="${escapeHtml(data.wasteSortedAnchorDate)}"></label>
+            </div>
           </fieldset>
           <button>Uložit a přepočítat náhled</button>
         </form>
@@ -228,7 +257,7 @@ function calculatorPage({ config, session, period, data, message, error }) {
 
 function auditPage({ config, session, entries }) {
   const rows = entries.map((e) => `<tr><td>${escapeHtml(e.created_at)}</td><td>${escapeHtml(e.action)}</td><td>${escapeHtml(e.entity_type)}${e.entity_id ? ` #${e.entity_id}` : ''}</td><td><code>${escapeHtml(e.details_json)}</code></td></tr>`).join('');
-  return layout({ title: 'Audit', session, config, body: `<section class="page-head"><div><div class="eyebrow">Transparentnost</div><h1>Auditní stopa</h1><p class="muted">Posledních 500 administrátorských operací.</p></div></section><section class="panel"><div class="table-wrap"><table><thead><tr><th>Čas</th><th>Akce</th><th>Entita</th><th>Detaily</th></tr></thead><tbody>${rows}</tbody></table></div></section>` });
+  return layout({ title: 'Audit', session, config, body: `<section class="page-head"><div><div class="eyebrow">Transparentnost</div><h1>Auditní stopa</h1><p class="muted">Kompletní historie administrátorských operací.</p></div></section><section class="panel"><div class="table-wrap"><table><thead><tr><th>Čas</th><th>Akce</th><th>Entita</th><th>Detaily</th></tr></thead><tbody>${rows}</tbody></table></div></section>` });
 }
 
 function printPage({ config, period, data }) {
