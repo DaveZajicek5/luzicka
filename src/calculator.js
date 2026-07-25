@@ -113,8 +113,14 @@ function calculatorData(db, period) {
   const lines = costs.map((cost) => {
     let weighted;
     if (cost.allocation_rule === 'area_common') {
-      const commonShare = people.length ? commonArea / people.length : 0;
-      weighted = people.map((person) => ({ id: person.id, weight: Number(person.private_area_m2) + commonShare }));
+      const occupiedRooms = rooms.filter((room) => room.personIds.length);
+      const commonSharePerRoom = occupiedRooms.length ? commonArea / occupiedRooms.length : 0;
+      weighted = people.map((person) => {
+        const personRooms = occupiedRooms.filter((room) => room.personIds.includes(person.id));
+        const roomWeight = personRooms.reduce((sum, room) =>
+          sum + (room.area_m2 + commonSharePerRoom) / room.personIds.length, 0);
+        return { id: person.id, weight: roomWeight || Number(person.private_area_m2) || 1 };
+      });
     } else if (cost.allocation_rule === 'private_area') {
       weighted = people.map((person) => ({ id: person.id, weight: Number(person.private_area_m2) }));
     } else if (cost.allocation_rule === 'weights') {
