@@ -9,26 +9,27 @@ const querystring = require('node:querystring');
 const QRCode = require('qrcode');
 const { formidable } = require('formidable');
 const {
-  openDatabase, audit, listPeople, listCategories, addExpense, generateRecurring, monthData
+  openDatabase, audit, listPeople, listCategories, addExpense, generateRecurring, transferCredit, monthData
 } = require('./db');
 const {
   createSession, readSession, sessionCookie, clearCookie, roleForPassword, isPrivateAddress
 } = require('./auth');
 const {
-  parseMoney, parseDecimal, currentPeriod, isPeriod, isDate, csvCell, splitWeighted
+  parseMoney, parseDecimal, currentPeriod, nextPeriod, isPeriod, isDate, csvCell, splitWeighted
 } = require('./utils');
 const {
   calculatorData, saveCalculatorSettings, generateCalculatorMonth, reopenCalculatorMonth, getSetting
 } = require('./calculator');
 const {
-  loginPage, dashboardPage, adminPage, auditPage, printPage,
+  loginPage, dashboardPage, oneOffPage, adminPage, auditPage, printPage,
   calculatorPage, calculatorSettingsPage
 } = require('./html');
 
 const CSS = Buffer.concat([
   fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css')),
   fs.readFileSync(path.join(__dirname, '..', 'public', 'calculator.css')),
-  fs.readFileSync(path.join(__dirname, '..', 'public', 'adjustments.css'))
+  fs.readFileSync(path.join(__dirname, '..', 'public', 'adjustments.css')),
+  fs.readFileSync(path.join(__dirname, '..', 'public', 'workflows.css'))
 ]);
 
 function readBody(req, limit = 1024 * 1024) {
@@ -103,7 +104,8 @@ function createServer(config) {
       FROM recurring_templates t JOIN categories c ON c.code=t.category_code ORDER BY t.active DESC,t.id
     `).all();
     const readings = db.prepare('SELECT * FROM meter_readings ORDER BY read_on DESC,id DESC LIMIT 200').all();
-    return { people, categories, templates, readings };
+    const costRules = db.prepare('SELECT * FROM monthly_cost_rules ORDER BY active DESC,position,code').all();
+    return { people, categories, templates, readings, costRules };
   }
 
   return http.createServer(async (req, res) => {
@@ -143,6 +145,38 @@ function createServer(config) {
         return redirectWithCookie(res, '/login', clearCookie());
       }
 
+      if (req.method === 'POST' && pathname === '/statements/confirm') {
+        const session = requireSession(req, res); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
+        if (!isPeriod(body.period)) throw new Error('Neplatný měsíc.');
+        if (!db.prepare('SELECT 1 FROM calculator_runs WHERE period=?').get(body.period)) {
+          throw new Error('Vyúčtování ještě není dokončené.');
+        }
+        const personIds = (Array.isArray(body.person_id) ? body.person_id : [body.person_id]).map(Number);
+        const validIds = new Set(listPeople(db, true).map((person) => person.id));
+        if (!personIds.length || personIds.some((personId) => !validIds.has(personId))) throw new Error('Neplatný obyvatel.');
+        const confirm = db.prepare(`INSERT INTO statement_confirmations(period,person_id) VALUES (?,?)
+          ON CONFLICT(period,person_id) DO UPDATE SET confirmed_at=CURRENT_TIMESTAMP`);
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          for (const personId of personIds) confirm.run(body.period, personId);
+          audit(db, 'confirm', 'statement', null, { period: body.period, personIds, role: session.role });
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+        return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Vyúčtování bylo potvrzeno.')}`);
+      }
+
+      if (req.method === 'POST' && pathname === '/credits/transfer') {
+        const session = requireSession(req, res, true); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
+        if (!isPeriod(body.source_period) || !isPeriod(body.target_period)) throw new Error('Neplatný měsíc převodu.');
+        transferCredit(db, body.source_period, body.target_period, Number(body.person_id));
+        return redirect(res, `/?period=${encodeURIComponent(body.target_period)}&message=${encodeURIComponent('Přeplatek byl převeden jako sleva do dalšího měsíce.')}`);
+      }
+
       if (req.method === 'GET' && pathname === '/') {
         const session = requireSession(req, res); if (!session) return;
         const period = isPeriod(url.searchParams.get('period')) ? url.searchParams.get('period') : currentPeriod();
@@ -152,9 +186,69 @@ function createServer(config) {
         }));
       }
 
+      if (req.method === 'GET' && pathname === '/one-off') {
+        const session = requireSession(req, res); if (!session) return;
+        const period = isPeriod(url.searchParams.get('period')) ? url.searchParams.get('period') : nextPeriod(currentPeriod());
+        return send(res, 200, oneOffPage({
+          config, session, people: listPeople(db), categories: listCategories(db), period,
+          message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
+        }));
+      }
+
       if (req.method === 'GET' && pathname === '/admin') {
         const session = requireSession(req, res, true); if (!session) return;
-        return send(res, 200, adminPage({ config, session, ...adminData(), message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || '' }));
+        return send(res, 200, adminPage({
+          config, session, ...adminData(), view: url.searchParams.get('view') || 'home',
+          message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
+        }));
+      }
+
+      if (req.method === 'POST' && pathname === '/cost-rules') {
+        const session = requireSession(req, res, true); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
+        const label = String(body.label || '').trim();
+        const amount = parseMoney(body.amount);
+        const rule = String(body.allocation_rule || '');
+        if (!label || amount < 0 || !['equal', 'area_common', 'private_area', 'weights'].includes(rule)) throw new Error('Neplatný pravidelný náklad.');
+        const code = `custom_${Date.now()}`;
+        const position = db.prepare('SELECT COALESCE(MAX(position),0)+10 AS position FROM monthly_cost_rules').get().position;
+        db.prepare(`INSERT INTO monthly_cost_rules
+          (code,label,category_code,amount_halere,allocation_rule,position) VALUES (?,?,?,?,?,?)`)
+          .run(code, label, 'other', amount, rule, position);
+        audit(db, 'create', 'cost_rule', null, { code, label, amount, rule });
+        return redirect(res, `/admin?view=recurring&message=${encodeURIComponent('Pravidelný náklad byl přidán.')}`);
+      }
+
+      const costRuleUpdate = pathname.match(/^\/cost-rules\/([a-zA-Z0-9_-]+)$/);
+      if (req.method === 'POST' && costRuleUpdate) {
+        const session = requireSession(req, res, true); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
+        const label = String(body.label || '').trim();
+        const amount = parseMoney(body.amount);
+        const rule = String(body.allocation_rule || '');
+        if (!label || amount < 0 || !['equal', 'area_common', 'private_area', 'weights'].includes(rule)) throw new Error('Neplatný pravidelný náklad.');
+        db.prepare('UPDATE monthly_cost_rules SET label=?,amount_halere=?,allocation_rule=? WHERE code=?')
+          .run(label, amount, rule, costRuleUpdate[1]);
+        audit(db, 'update', 'cost_rule', null, { code: costRuleUpdate[1], label, amount, rule });
+        return redirect(res, `/admin?view=recurring&message=${encodeURIComponent('Pravidelný náklad byl upraven.')}`);
+      }
+
+      const costRuleDeactivate = pathname.match(/^\/cost-rules\/([a-zA-Z0-9_-]+)\/deactivate$/);
+      if (req.method === 'POST' && costRuleDeactivate) {
+        const session = requireSession(req, res, true); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
+        db.prepare('UPDATE monthly_cost_rules SET active=0 WHERE code=?').run(costRuleDeactivate[1]);
+        audit(db, 'deactivate', 'cost_rule', null, { code: costRuleDeactivate[1] });
+        return redirect(res, `/admin?view=recurring&message=${encodeURIComponent('Pravidelný náklad byl odebrán z budoucích měsíců.')}`);
+      }
+
+      const costRuleActivate = pathname.match(/^\/cost-rules\/([a-zA-Z0-9_-]+)\/activate$/);
+      if (req.method === 'POST' && costRuleActivate) {
+        const session = requireSession(req, res, true); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
+        db.prepare('UPDATE monthly_cost_rules SET active=1 WHERE code=?').run(costRuleActivate[1]);
+        audit(db, 'activate', 'cost_rule', null, { code: costRuleActivate[1] });
+        return redirect(res, `/admin?view=recurring&message=${encodeURIComponent('Pravidelný náklad byl obnoven.')}`);
       }
 
       if (req.method === 'GET' && pathname === '/calculator') {
@@ -205,9 +299,13 @@ function createServer(config) {
         }
         const allowedRules = ['equal', 'area_common', 'private_area', 'weights'];
         const costs = current.costs.map((cost) => {
-          const allocationRule = String(body[`cost_rule_${cost.code}`] || '');
+          const allocationRule = body[`cost_rule_${cost.code}`] === undefined
+            ? cost.allocation_rule
+            : String(body[`cost_rule_${cost.code}`] || '');
           if (!allowedRules.includes(allocationRule)) throw new Error(`Neplatné pravidlo pro ${cost.label}.`);
-          const amountHalere = parseMoney(body[`cost_amount_${cost.code}`]);
+          const amountHalere = body[`cost_amount_${cost.code}`] === undefined
+            ? cost.amount_halere
+            : parseMoney(body[`cost_amount_${cost.code}`]);
           if (amountHalere < 0) throw new Error(`Částka ${cost.label} nesmí být záporná.`);
           return { code: cost.code, amountHalere, allocationRule };
         });
@@ -252,7 +350,7 @@ function createServer(config) {
         if (!isPeriod(period) || !Number.isInteger(personId)) throw new Error('Neplatné údaje platby.');
         const month = monthData(db, period);
         const person = month.people.find((item) => item.id === personId);
-        if (!person || person.balance_halere <= 0) throw new Error('Pro tuto osobu není co platit.');
+        if (!person || person.payment_group_balance_halere <= 0) throw new Error('Pro tuto osobu není co platit.');
         const iban = getSetting(db, 'payment_iban', '').replace(/\s+/g, '').toUpperCase();
         if (!/^CZ\d{22}$/.test(iban)) throw new Error('Správce zatím nenastavil účet pro QR platby.');
         const variableSymbol = `${period.replace('-', '')}${String(personId).padStart(2, '0')}`.slice(0, 10);
@@ -264,7 +362,7 @@ function createServer(config) {
       }
 
       if (req.method === 'POST' && pathname === '/expenses') {
-        const session = requireSession(req, res, true); if (!session) return;
+        const session = requireSession(req, res); if (!session) return;
         const multipart = String(req.headers['content-type'] || '').startsWith('multipart/form-data');
         const parsed = multipart ? await readMultipart(req) : { body: await readBody(req), file: null };
         const { body } = parsed; verifyCsrf(session, body);
@@ -301,7 +399,7 @@ function createServer(config) {
             VALUES (?,?,?,?,?)`).run(expenseId, String(parsed.file.originalFilename || 'příloha'), storedName, parsed.file.mimetype, parsed.file.size);
           audit(db, 'create', 'expense_attachment', null, { expenseId, originalName: parsed.file.originalFilename, size: parsed.file.size });
         }
-        return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Položka byla přidána.')}`);
+        return redirect(res, `/one-off?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Náklad byl zařazen do vyúčtování.')}`);
       }
 
       const attachmentDownload = pathname.match(/^\/attachments\/(\d+)$/);
@@ -334,6 +432,7 @@ function createServer(config) {
         const result = db.prepare("UPDATE expenses SET status='void',voided_at=CURRENT_TIMESTAMP,void_reason=? WHERE id=? AND status='active'").run(reason, id);
         if (!result.changes) throw new Error('Položka už je stornovaná nebo neexistuje.');
         audit(db, 'void', 'expense', id, { reason });
+        db.prepare('DELETE FROM statement_confirmations WHERE period=?').run(body.period || currentPeriod());
         return redirect(res, `/?period=${encodeURIComponent(body.period || currentPeriod())}&message=${encodeURIComponent('Položka byla stornována.')}`);
       }
 
@@ -371,7 +470,7 @@ function createServer(config) {
             .run(Number(personValue), body.period, body.paid_on, amount, note);
           audit(db, 'create', 'payment', Number(result.lastInsertRowid), { ...body, amount_halere: amount });
         }
-        return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Platba byla přidána.')}`);
+        return redirect(res, `/admin?view=payments&message=${encodeURIComponent('Platba byla přidána.')}`);
       }
 
       const paymentVoid = pathname.match(/^\/payments\/(\d+)\/void$/);
@@ -396,7 +495,7 @@ function createServer(config) {
         const result = db.prepare('INSERT INTO meter_readings(meter_type,read_on,value,unit,note) VALUES (?,?,?,?,?)')
           .run(body.meter_type, body.read_on, parseDecimal(body.value), unit, String(body.note || '').trim());
         audit(db, 'create', 'meter_reading', Number(result.lastInsertRowid), body);
-        return redirect(res, `/admin?message=${encodeURIComponent('Odečet byl uložen.')}`);
+        return redirect(res, `/admin?view=meters&message=${encodeURIComponent('Odečet byl uložen.')}`);
       }
 
       const meterVoid = pathname.match(/^\/meters\/(\d+)\/void$/);
