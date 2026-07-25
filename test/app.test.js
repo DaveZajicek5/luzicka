@@ -49,12 +49,24 @@ test('kalkulačka rozdělí známé náklady přesně a měsíc nevytvoří dvak
   const names = ['David Zajíček', 'Anežka Tvrdá', 'Barbora Miklíčková', 'Max Hybner'];
   const areas = [12.04, 12.04, 19.6, 22.4];
   people.forEach((person, index) => db.prepare('UPDATE people SET name=?,private_area_m2=? WHERE id=?').run(names[index], areas[index], person.id));
+  db.prepare('DELETE FROM room_occupants').run();
+  db.prepare('DELETE FROM rooms').run();
+  const room = db.prepare('INSERT INTO rooms(name,length_m,width_m,position) VALUES (?,?,?,?)');
+  const occupant = db.prepare('INSERT INTO room_occupants(room_id,person_id) VALUES (?,?)');
+  let result = room.run('David + Anežka', 5.6, 4.3, 10);
+  occupant.run(Number(result.lastInsertRowid), people[0].id);
+  occupant.run(Number(result.lastInsertRowid), people[1].id);
+  result = room.run('Bára', 5.6, 3.5, 20);
+  occupant.run(Number(result.lastInsertRowid), people[2].id);
+  result = room.run('Max', 5.6, 4, 30);
+  occupant.run(Number(result.lastInsertRowid), people[3].id);
 
   const calculation = calculatorData(db, '2026-08');
   assert.equal(calculation.totalArea, 113);
-  assert.equal(calculation.commonArea, 46.92);
+  assert.ok(Math.abs(calculation.commonArea - 46.92) < 0.000001);
   assert.equal(calculation.lines.reduce((sum, line) => sum + line.amount_halere, 0), 3182900);
   assert.equal(calculation.totals.reduce((sum, person) => sum + person.amount_halere, 0), 3182900);
+  assert.deepEqual(calculation.totals.map((person) => person.amount_halere), [610106, 610105, 950371, 1012318]);
 
   const generated = generateCalculatorMonth(db, audit, '2026-08');
   assert.equal(generated.expenseIds.length, 6);
