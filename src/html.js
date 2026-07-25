@@ -8,7 +8,7 @@ function layout({ title, body, session, config, period, message, error, print = 
       <a class="brand" href="/?period=${escapeHtml(period || '')}">${escapeHtml(config.householdName)}</a>
       <nav>
         <a href="/?period=${escapeHtml(period || '')}">Přehled</a>
-        ${session.role === 'admin' ? '<a href="/admin">Správa</a><a href="/audit">Audit</a>' : ''}
+        ${session.role === 'admin' ? '<a href="/calculator">Kalkulačka</a><a href="/admin">Správa</a><a href="/audit">Audit</a>' : ''}
         <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><button class="link-button">Odhlásit</button></form>
       </nav>
     </header>` : '';
@@ -50,7 +50,7 @@ function loginPage(config, error = '') {
   });
 }
 
-function personCards(people) {
+function personCards(people, period, paymentEnabled) {
   return people.map((person) => {
     const cls = person.balance_halere > 0 ? 'owes' : person.balance_halere < 0 ? 'credit' : 'settled';
     const label = person.balance_halere > 0 ? 'Zbývá doplatit' : person.balance_halere < 0 ? 'Přeplatek' : 'Vyrovnáno';
@@ -59,6 +59,7 @@ function personCards(people) {
       <div class="metric-value">${formatMoney(Math.abs(person.balance_halere))}</div>
       <div class="metric-label">${label}</div>
       <dl><div><dt>Předepsáno</dt><dd>${formatMoney(person.due_halere)}</dd></div><div><dt>Zaplaceno</dt><dd>${formatMoney(person.paid_halere)}</dd></div></dl>
+      ${paymentEnabled && person.balance_halere > 0 ? `<a class="button secondary payment-button" href="/payment-qr.svg?period=${escapeHtml(period)}&person=${person.id}" target="_blank">QR kód k platbě</a>` : ''}
     </article>`;
   }).join('');
 }
@@ -85,7 +86,7 @@ function dashboardPage({ config, session, period, data, message, error }) {
       <div><div class="eyebrow">Měsíční přehled</div><h1>${escapeHtml(periodLabel(period))}</h1><p class="muted">Celkové aktivní náklady: <strong>${formatMoney(data.totalHalere)}</strong></p></div>
       <form method="get" action="/" class="period-picker"><label>Měsíc<input type="month" name="period" value="${escapeHtml(period)}"></label><button>Zobrazit</button></form>
     </section>
-    <section class="metrics">${personCards(data.people)}</section>
+    <section class="metrics">${personCards(data.people, period, data.paymentEnabled)}</section>
     <section class="two-col">
       <article class="panel"><div class="panel-head"><h2>Struktura nákladů</h2></div>${categoryBars}</article>
       <article class="panel"><div class="panel-head"><h2>Poslední odečty</h2></div><div class="meters">${meterCards}</div></article>
@@ -152,6 +153,79 @@ function adminPage({ config, session, people, categories, templates, readings, m
   return layout({ title: 'Správa', body, session, config, message, error });
 }
 
+function calculatorPage({ config, session, period, data, message, error }) {
+  const rules = [
+    ['equal', 'Stejně na osobu'],
+    ['area_common', 'Pokoj + stejný díl společných prostor'],
+    ['private_area', 'Jen podle plochy pokoje'],
+    ['weights', 'Podle ručních vah']
+  ];
+  const ruleOptions = (selected) => rules.map(([value, label]) =>
+    `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
+  const peopleInputs = data.people.map((person) => `<label>${escapeHtml(person.name)}
+    <input type="number" min="0" step="0.01" name="person_area_${person.id}" value="${escapeHtml(person.private_area_m2)}" required>
+    <span class="muted small">m² soukromé plochy</span>
+  </label>`).join('');
+  const costInputs = data.costs.map((cost) => `<div class="cost-rule">
+    <label>${escapeHtml(cost.label)}<input name="cost_amount_${escapeHtml(cost.code)}" inputmode="decimal" value="${(cost.amount_halere / 100).toFixed(2)}" required></label>
+    <label>Rozdělení<select name="cost_rule_${escapeHtml(cost.code)}">${ruleOptions(cost.allocation_rule)}</select></label>
+  </div>`).join('');
+  const totalCosts = data.lines.reduce((sum, line) => sum + line.amount_halere, 0);
+  const preview = data.totals.map((person) => {
+    const details = data.lines.map((line) => {
+      const amount = line.allocations.find((item) => item.personId === person.id)?.amount || 0;
+      return `<li><span>${escapeHtml(line.label)}</span><strong>${formatMoney(amount)}</strong></li>`;
+    }).join('');
+    return `<article class="metric-card">
+      <div class="metric-name">${escapeHtml(person.name)}</div>
+      <div class="metric-value">${formatMoney(person.amount_halere)}</div>
+      <div class="metric-label">měsíční předpis</div>
+      <ul class="allocation-list">${details}</ul>
+    </article>`;
+  }).join('');
+  const generation = data.generated
+    ? `<div class="notice success">Předpis pro ${escapeHtml(periodLabel(period))} už byl vytvořen. Znovu jej vytvořit nelze, aby nevznikly duplicity.</div>`
+    : `<form method="post" action="/calculator/generate" class="generate-box">
+        <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
+        <input type="hidden" name="period" value="${escapeHtml(period)}">
+        <div><strong>Zaúčtovat tento návrh</strong><p class="muted small">Vznikne pět pevných položek a částky se propíšou do účtů nájemníků.</p></div>
+        <button>Vytvořit předpis pro ${escapeHtml(periodLabel(period))}</button>
+      </form>`;
+  const body = `
+    <section class="page-head">
+      <div><div class="eyebrow">Rozpočítání nájmu</div><h1>Kalkulačka domácnosti</h1><p class="muted">Nejdřív upravte pravidla a uložte náhled. Teprve potom jej jedním tlačítkem zaúčtujte.</p></div>
+      <form method="get" action="/calculator" class="period-picker"><label>Měsíc<input type="month" name="period" value="${escapeHtml(period)}"></label><button>Zobrazit</button></form>
+    </section>
+    <section class="calculator-layout">
+      <article class="panel calculator-settings">
+        <h2>Vstupy a pravidla</h2>
+        <form method="post" action="/calculator/settings" class="stack">
+          <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
+          <input type="hidden" name="period" value="${escapeHtml(period)}">
+          <div class="area-summary">
+            <label>Celková plocha bytu<input type="number" min="1" step="0.01" name="total_area_m2" value="${escapeHtml(data.totalArea)}" required></label>
+            <div><span>Soukromé pokoje</span><strong>${formatDecimal(data.privateArea, 2)} m²</strong></div>
+            <div><span>Společná plocha</span><strong>${formatDecimal(data.commonArea, 2)} m²</strong></div>
+          </div>
+          <fieldset><legend>Soukromá plocha připadající na osobu</legend><div class="form-grid">${peopleInputs}</div></fieldset>
+          <fieldset><legend>Měsíční náklady a způsob rozdělení</legend><div class="stack">${costInputs}</div></fieldset>
+          <fieldset><legend>QR platby na účet správce</legend>
+            <div class="form-grid"><label>Český IBAN<input name="payment_iban" value="${escapeHtml(data.paymentIban)}" placeholder="CZ6508000000192000145399"></label>
+            <label>Den splatnosti<input type="number" min="1" max="28" name="payment_due_day" value="${escapeHtml(data.paymentDueDay)}" required></label></div>
+            <p class="muted small">IBAN zůstává jen v této aplikaci. Bez něj se platební QR kódy nezobrazí.</p>
+          </fieldset>
+          <button>Uložit a přepočítat náhled</button>
+        </form>
+      </article>
+      <div>
+        <article class="panel calculator-total"><span>Celkové měsíční náklady</span><strong>${formatMoney(totalCosts)}</strong><small>Součet všech pěti položek</small></article>
+        <section class="metrics calculator-preview">${preview}</section>
+        <article class="panel">${generation}</article>
+      </div>
+    </section>`;
+  return layout({ title: 'Kalkulačka', body, session, config, period, message, error });
+}
+
 function auditPage({ config, session, entries }) {
   const rows = entries.map((e) => `<tr><td>${escapeHtml(e.created_at)}</td><td>${escapeHtml(e.action)}</td><td>${escapeHtml(e.entity_type)}${e.entity_id ? ` #${e.entity_id}` : ''}</td><td><code>${escapeHtml(e.details_json)}</code></td></tr>`).join('');
   return layout({ title: 'Audit', session, config, body: `<section class="page-head"><div><div class="eyebrow">Transparentnost</div><h1>Auditní stopa</h1><p class="muted">Posledních 500 administrátorských operací.</p></div></section><section class="panel"><div class="table-wrap"><table><thead><tr><th>Čas</th><th>Akce</th><th>Entita</th><th>Detaily</th></tr></thead><tbody>${rows}</tbody></table></div></section>` });
@@ -163,4 +237,4 @@ function printPage({ config, period, data }) {
   return layout({ print: true, title: `Přehled ${period}`, config, body: `<section class="print-head"><div><h1>${escapeHtml(config.householdName)}</h1><p>Měsíční rozúčtování · ${escapeHtml(periodLabel(period))}</p></div><button onclick="window.print()">Vytisknout / uložit PDF</button></section><h2>Souhrn osob</h2><table><thead><tr><th>Osoba</th><th>Předepsáno</th><th>Zaplaceno</th><th>Zbývá</th></tr></thead><tbody>${summary}</tbody></table><h2>Položky</h2><table><thead><tr><th>Datum</th><th>Kategorie</th><th>Popis</th><th>Rozdělení</th><th>Celkem</th></tr></thead><tbody>${rows}</tbody></table><p class="print-total">Celkové náklady: ${formatMoney(data.totalHalere)}</p>` });
 }
 
-module.exports = { layout, loginPage, dashboardPage, adminPage, auditPage, printPage };
+module.exports = { layout, loginPage, dashboardPage, adminPage, auditPage, printPage, calculatorPage };
