@@ -218,7 +218,7 @@ function calculatorPage({ config, session, period, data, message, error }) {
 function allocationRuleLabel(rule) {
   return ({
     equal: 'stejně na osobu',
-    area_common: 'pokoj + společné prostory',
+    area_common: 'pokoj + ⅓ společných prostor',
     private_area: 'podle pokoje',
     weights: 'podle vah'
   })[rule] || rule;
@@ -227,7 +227,7 @@ function allocationRuleLabel(rule) {
 function calculatorSettingsPage({ config, session, period, data, message, error }) {
   const rules = [
     ['equal', 'Stejně na osobu'],
-    ['area_common', 'Pokoj + stejný díl společných prostor'],
+    ['area_common', 'Podle pokoje + společné prostory po pokojích'],
     ['private_area', 'Jen podle plochy pokoje'],
     ['weights', 'Podle ručních vah']
   ];
