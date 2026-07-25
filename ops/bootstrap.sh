@@ -8,7 +8,7 @@ ENV_FILE="$ENV_DIR/luzicka.env"
 CREDENTIALS_FILE="/root/luzicka-credentials.txt"
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Spusťte skript přes sudo: curl ... | sudo bash" >&2
+  echo "Spusťte skript přes sudo: wget -qO- ... | sudo bash" >&2
   exit 1
 fi
 
@@ -21,22 +21,29 @@ export DEBIAN_FRONTEND=noninteractive
 hostnamectl set-hostname luzicka
 timedatectl set-timezone Europe/Prague
 
-# MacBook Air 2015 obvykle používá Broadcom BCM4360, jehož ovladač je v non-free.
-if [[ -f /etc/apt/sources.list.d/debian.sources ]]; then
-  sed -i -E 's/^Components:.*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
-fi
-if [[ -f /etc/apt/sources.list ]]; then
-  sed -i -E '/^deb / { /non-free/! s/ main([[:space:]]|$)/ main contrib non-free non-free-firmware\1/; }' /etc/apt/sources.list
-fi
+# Offline instalace často ponechá jen cdrom zdroj nebo neúplné online zdroje.
+# Přepiš je deterministicky na oficiální Debian 13 repozitáře včetně Broadcom non-free balíků.
+mkdir -p /etc/apt/sources.list.d/disabled-by-luzicka
+for source in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+  [[ -e "$source" ]] || continue
+  mv "$source" /etc/apt/sources.list.d/disabled-by-luzicka/"$(basename "$source")" || true
+done
+cat >/etc/apt/sources.list <<'EOF'
+deb https://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+deb https://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+deb https://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
+EOF
 
 apt-get update
 apt-get install -y \
-  ca-certificates curl git jq openssl iw wireless-tools network-manager \
+  ca-certificates curl wget git jq openssl iw wireless-tools rfkill network-manager \
   linux-headers-amd64 broadcom-sta-dkms \
   docker.io docker-compose \
   unattended-upgrades needrestart smartmontools
 
-modprobe wl 2>/dev/null || true
+# Odstraň konfliktní open-source Broadcom moduly a načti STA ovladač pro BCM4360.
+modprobe -r b44 b43 b43legacy ssb brcmsmac bcma 2>/dev/null || true
+modprobe wl
 systemctl enable --now NetworkManager docker
 
 if ! command -v tailscale >/dev/null 2>&1; then
@@ -128,25 +135,24 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
+# Přepni z dočasného iPhone tetheringu na domácí Wi-Fi dřív, než se pokračuje dál.
+if ! nmcli -t -f TYPE,STATE device status 2>/dev/null | grep -q '^wifi:connected$' && [[ -r /dev/tty ]]; then
+  nmcli radio wifi on
+  nmcli device wifi rescan || true
+  echo
+  read -r -p "Název domácí Wi-Fi: " WIFI_SSID </dev/tty
+  read -r -s -p "Heslo k Wi-Fi: " WIFI_PASSWORD </dev/tty
+  echo
+  nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASSWORD"
+  unset WIFI_PASSWORD
+fi
+
 install -m 0644 "$REPO_DIR"/ops/systemd/* /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now luzicka-wifi.service
 systemctl enable --now luzicka-update.timer luzicka-backup.timer luzicka-watchdog.timer
 
 bash "$REPO_DIR/ops/deploy.sh" --initial
-
-if ! nmcli -t -f TYPE,STATE device status 2>/dev/null | grep -q '^wifi:connected$' && [[ -r /dev/tty ]]; then
-  echo
-  read -r -p "Název domácí Wi-Fi (Enter = přeskočit, pokud používáte kabel): " WIFI_SSID </dev/tty || true
-  if [[ -n "${WIFI_SSID:-}" ]]; then
-    read -r -s -p "Heslo k Wi-Fi: " WIFI_PASSWORD </dev/tty
-    echo
-    nmcli radio wifi on
-    nmcli device wifi rescan || true
-    nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASSWORD"
-    unset WIFI_PASSWORD
-  fi
-fi
 
 if ! tailscale ip -4 >/dev/null 2>&1; then
   echo
