@@ -120,6 +120,12 @@ function migrate(db) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  const paymentColumns = db.prepare('PRAGMA table_info(payments)').all().map((column) => column.name);
+  if (!paymentColumns.includes('source_expense_id')) {
+    db.exec('ALTER TABLE payments ADD COLUMN source_expense_id INTEGER REFERENCES expenses(id)');
+  }
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_source_expense
+    ON payments(source_expense_id) WHERE source_expense_id IS NOT NULL`);
 }
 
 function seed(db) {
@@ -155,6 +161,10 @@ function addExpense(db, input) {
   const placeholders = selected.map(() => '?').join(',');
   const people = db.prepare(`SELECT id, weight FROM people WHERE id IN (${placeholders})`).all(...selected);
   if (people.length !== selected.length) throw new Error('Některý vybraný obyvatel neexistuje.');
+  const payer = input.paidByPersonId
+    ? db.prepare('SELECT id FROM people WHERE id=?').get(Number(input.paidByPersonId))
+    : null;
+  if (input.paidByPersonId && !payer) throw new Error('Vybraný plátce neexistuje.');
   const allocations = splitWeighted(input.amountHalere, people);
 
   db.exec('BEGIN IMMEDIATE');
@@ -178,9 +188,45 @@ function addExpense(db, input) {
       const person = people.find((p) => p.id === allocation.personId);
       insertAllocation.run(expenseId, allocation.personId, allocation.amount, person.weight);
     }
-    audit(db, 'create', 'expense', expenseId, { ...input, allocations });
+    let advancePaymentId = null;
+    if (payer && input.amountHalere > 0) {
+      const payment = db.prepare(`INSERT INTO payments
+        (person_id,period,paid_on,amount_halere,note,source_expense_id)
+        VALUES (?,?,?,?,?,?)`).run(
+        payer.id,
+        input.period,
+        input.occurredOn,
+        input.amountHalere,
+        `Zaplaceno předem: ${input.description}`,
+        expenseId
+      );
+      advancePaymentId = Number(payment.lastInsertRowid);
+    }
+    audit(db, 'create', 'expense', expenseId, { ...input, allocations, advancePaymentId });
     db.exec('COMMIT');
     return expenseId;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function voidExpense(db, expenseId, reason) {
+  const expense = db.prepare('SELECT * FROM expenses WHERE id=?').get(expenseId);
+  if (!expense || expense.status !== 'active') throw new Error('Položka už je stornovaná nebo neexistuje.');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(`UPDATE expenses
+      SET status='void',voided_at=CURRENT_TIMESTAMP,void_reason=?
+      WHERE id=?`).run(reason, expenseId);
+    const linked = db.prepare(`UPDATE payments
+      SET status='void',voided_at=CURRENT_TIMESTAMP,void_reason=?
+      WHERE source_expense_id=? AND status='active'`)
+      .run(`Storno souvisejícího nákladu: ${reason}`, expenseId);
+    db.prepare('DELETE FROM statement_confirmations WHERE period=?').run(expense.period);
+    audit(db, 'void', 'expense', expenseId, { reason, period: expense.period, linkedPaymentVoided: Boolean(linked.changes) });
+    db.exec('COMMIT');
+    return { period: expense.period, linkedPaymentVoided: Boolean(linked.changes) };
   } catch (error) {
     db.exec('ROLLBACK');
     throw error;
@@ -277,7 +323,7 @@ function monthData(db, period) {
   const payments = db.prepare(`
     SELECT pay.*, p.name AS person_name FROM payments pay
     JOIN people p ON p.id=pay.person_id
-    WHERE pay.period=? ORDER BY pay.paid_on,pay.id
+    WHERE pay.period=? AND pay.status='active' ORDER BY pay.paid_on,pay.id
   `).all(period);
 
   const categories = db.prepare(`
@@ -327,6 +373,7 @@ module.exports = {
   listPeople,
   listCategories,
   addExpense,
+  voidExpense,
   generateRecurring,
   transferCredit,
   monthData
