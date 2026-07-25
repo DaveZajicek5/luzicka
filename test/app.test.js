@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { createServer } = require('../src/app');
 const { splitWeighted } = require('../src/utils');
-const { openDatabase, audit } = require('../src/db');
+const { openDatabase, audit, monthData, transferCredit } = require('../src/db');
 const { calculatorData, generateCalculatorMonth, reopenCalculatorMonth } = require('../src/calculator');
 
 function config() {
@@ -79,6 +79,25 @@ test('kalkulačka rozdělí známé náklady přesně a měsíc nevytvoří dvak
   db.close();
 });
 
+test('přeplatek se převede jako sleva do dalšího měsíce a zdrojový měsíc vyrovná', () => {
+  const db = openDatabase(':memory:');
+  const person = db.prepare('SELECT * FROM people ORDER BY id LIMIT 1').get();
+  db.prepare(`INSERT INTO expenses(occurred_on,period,category_code,description,amount_halere)
+    VALUES ('2026-07-01','2026-07','rent','Nájem',100000)`).run();
+  const expenseId = db.prepare('SELECT last_insert_rowid() AS id').get().id;
+  db.prepare('INSERT INTO expense_allocations(expense_id,person_id,amount_halere,weight_snapshot) VALUES (?,?,100000,1)')
+    .run(expenseId, person.id);
+  db.prepare(`INSERT INTO payments(person_id,period,paid_on,amount_halere,note)
+    VALUES (?,'2026-07','2026-07-10',125000,'Přeplatek')`).run(person.id);
+
+  assert.equal(monthData(db, '2026-07').people.find((item) => item.id === person.id).balance_halere, -25000);
+  transferCredit(db, '2026-07', '2026-08', person.id);
+  assert.equal(monthData(db, '2026-07').people.find((item) => item.id === person.id).balance_halere, 0);
+  assert.equal(monthData(db, '2026-08').people.find((item) => item.id === person.id).balance_halere, -25000);
+  assert.throws(() => transferCredit(db, '2026-07', '2026-08', person.id), /už byl převeden/);
+  db.close();
+});
+
 test('viewer neotevře administraci, admin přidá položku a export ji obsahuje', async (t) => {
   const { server, base } = await start();
   t.after(() => server.close());
@@ -87,12 +106,16 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   assert.equal(viewer.response.status, 303);
   const denied = await fetch(`${base}/admin`, { headers: { cookie: viewer.cookie }, redirect: 'manual' });
   assert.equal(denied.status, 403);
+  const oneOff = await fetch(`${base}/one-off`, { headers: { cookie: viewer.cookie } });
+  assert.equal(oneOff.status, 200);
+  assert.match(await oneOff.text(), /Jednorázový náklad/);
 
   const admin = await login(base, 'admin-pass');
-  const adminResponse = await fetch(`${base}/admin`, { headers: { cookie: admin.cookie } });
+  const adminResponse = await fetch(`${base}/admin?view=recurring`, { headers: { cookie: admin.cookie } });
   const html = await adminResponse.text();
   const csrf = csrfFrom(html);
   assert.ok(csrf);
+  assert.match(html, /Pravidelné náklady/);
 
   const calculator = await fetch(`${base}/calculator?period=2026-07`, { headers: { cookie: admin.cookie } });
   const calculatorHtml = await calculator.text();
@@ -103,6 +126,13 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   const settingsHtml = await settings.text();
   assert.match(settingsHtml, /Nastavení domácnosti/);
   assert.match(settingsHtml, /Český IBAN/);
+
+  const generate = await fetch(`${base}/calculator/generate`, {
+    method: 'POST', redirect: 'manual',
+    headers: { cookie: admin.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams([['csrf', csrf], ['period', '2026-07']])
+  });
+  assert.equal(generate.status, 303);
 
   const add = await fetch(`${base}/expenses`, {
     method: 'POST', redirect: 'manual', headers: {
@@ -116,13 +146,29 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   });
   assert.equal(add.status, 303);
 
+  const updatedCalculator = await fetch(`${base}/calculator?period=2026-07`, { headers: { cookie: admin.cookie } });
+  assert.match(await updatedCalculator.text(), /Internet červenec/);
+
   const dashboard = await fetch(`${base}/?period=2026-07`, { headers: { cookie: viewer.cookie } });
   const dashboardHtml = await dashboard.text();
   assert.match(dashboardHtml, /Internet červenec/);
   assert.match(dashboardHtml, /800,00/);
+  assert.match(dashboardHtml, /Potvrdit vyúčtování/);
+
+  const confirm = await fetch(`${base}/statements/confirm`, {
+    method: 'POST', redirect: 'manual',
+    headers: { cookie: viewer.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams([['csrf', csrfFrom(dashboardHtml)], ['period', '2026-07'], ['person_id', '1']])
+  });
+  assert.equal(confirm.status, 303);
 
   const csv = await fetch(`${base}/export/month.csv?period=2026-07`, { headers: { cookie: viewer.cookie } });
   const csvText = await csv.text();
   assert.match(csvText, /Internet červenec/);
   assert.match(csvText, /200,00/);
+
+  const auditResponse = await fetch(`${base}/audit`, { headers: { cookie: admin.cookie } });
+  const auditHtml = await auditResponse.text();
+  assert.match(auditHtml, /Přidán náklad/);
+  assert.match(auditHtml, /<summary>Detail<\/summary>/);
 });
