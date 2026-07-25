@@ -22,7 +22,7 @@ function layout({ title, body, session, config, period, message, error, print = 
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>${escapeHtml(title)} · ${escapeHtml(config.householdName)}</title>
-  <link rel="stylesheet" href="/app.css?v=20260725-3">
+  <link rel="stylesheet" href="/app.css?v=20260725-4">
 </head>
 <body class="${print ? 'print-view' : ''}">
 ${nav}
