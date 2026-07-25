@@ -3,8 +3,11 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
 const querystring = require('node:querystring');
 const QRCode = require('qrcode');
+const { formidable } = require('formidable');
 const {
   openDatabase, audit, listPeople, listCategories, addExpense, generateRecurring, monthData
 } = require('./db');
@@ -12,7 +15,7 @@ const {
   createSession, readSession, sessionCookie, clearCookie, roleForPassword, isPrivateAddress
 } = require('./auth');
 const {
-  parseMoney, parseDecimal, currentPeriod, isPeriod, isDate, csvCell
+  parseMoney, parseDecimal, currentPeriod, isPeriod, isDate, csvCell, splitWeighted
 } = require('./utils');
 const {
   calculatorData, saveCalculatorSettings, generateCalculatorMonth, getSetting
@@ -34,6 +37,19 @@ function readBody(req, limit = 1024 * 1024) {
     });
     req.on('end', () => resolve(querystring.parse(body)));
     req.on('error', reject);
+  });
+}
+
+function readMultipart(req) {
+  return new Promise((resolve, reject) => {
+    const form = formidable({
+      uploadDir: os.tmpdir(), maxFileSize: 10 * 1024 * 1024,
+      maxFiles: 1, allowEmptyFiles: false, multiples: true
+    });
+    form.parse(req, (error, fields, files) => error ? reject(error) : resolve({
+      body: Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, Array.isArray(value) && value.length === 1 ? value[0] : value])),
+      file: (Array.isArray(files.attachment) ? files.attachment[0] : files.attachment) || null
+    }));
   });
 }
 
@@ -156,15 +172,25 @@ function createServer(config) {
         if (!Number.isInteger(paymentDueDay) || paymentDueDay < 1 || paymentDueDay > 28) throw new Error('Den splatnosti musí být mezi 1 a 28.');
         if (paymentIban && !/^CZ\d{22}$/.test(paymentIban)) throw new Error('Český IBAN musí mít tvar CZ a 22 číslic.');
         const people = listPeople(db, true).map((person) => {
-          const privateArea = parseDecimal(body[`person_area_${person.id}`]);
-          if (privateArea < 0) throw new Error(`Plocha osoby ${person.name} nesmí být záporná.`);
-          return { id: person.id, privateArea };
+          return { id: person.id, privateArea: 0 };
         });
-        if (people.reduce((sum, person) => sum + person.privateArea, 0) > totalArea) {
+        const current = calculatorData(db, body.period || currentPeriod());
+        const rooms = current.rooms.map((room) => {
+          const lengthM = parseDecimal(body[`room_length_${room.id}`]);
+          const widthM = parseDecimal(body[`room_width_${room.id}`]);
+          const name = String(body[`room_name_${room.id}`] || '').trim();
+          if (!name || !(lengthM > 0) || !(widthM > 0)) throw new Error('Název a rozměry pokoje musí být platné.');
+          const share = lengthM * widthM / Math.max(1, room.personIds.length);
+          for (const personId of room.personIds) {
+            const person = people.find((item) => item.id === personId);
+            if (person) person.privateArea += share;
+          }
+          return { id: room.id, name, lengthM, widthM };
+        });
+        if (rooms.reduce((sum, room) => sum + room.lengthM * room.widthM, 0) > totalArea) {
           throw new Error('Součet soukromých ploch je větší než plocha bytu.');
         }
         const allowedRules = ['equal', 'area_common', 'private_area', 'weights'];
-        const current = calculatorData(db, body.period || currentPeriod());
         const costs = current.costs.map((cost) => {
           const allocationRule = String(body[`cost_rule_${cost.code}`] || '');
           if (!allowedRules.includes(allocationRule)) throw new Error(`Neplatné pravidlo pro ${cost.label}.`);
@@ -172,7 +198,19 @@ function createServer(config) {
           if (amountHalere < 0) throw new Error(`Částka ${cost.label} nesmí být záporná.`);
           return { code: cost.code, amountHalere, allocationRule };
         });
-        saveCalculatorSettings(db, audit, { totalArea, paymentIban, paymentDueDay, people, costs });
+        const waste = {};
+        for (const prefix of ['waste_mixed', 'waste_sorted']) {
+          const weekday = String(body[`${prefix}_weekday`] || '');
+          const interval = Number(body[`${prefix}_interval_weeks`]);
+          const anchor = String(body[`${prefix}_anchor_date`] || '');
+          if (weekday && !/^[0-6]$/.test(weekday)) throw new Error('Neplatný den svozu.');
+          if (!Number.isInteger(interval) || interval < 1 || interval > 8) throw new Error('Interval svozu musí být 1–8 týdnů.');
+          if (anchor && !isDate(anchor)) throw new Error('Neplatné počáteční datum svozu.');
+          waste[`${prefix}_weekday`] = weekday;
+          waste[`${prefix}_interval_weeks`] = interval;
+          waste[`${prefix}_anchor_date`] = anchor;
+        }
+        saveCalculatorSettings(db, audit, { totalArea, paymentIban, paymentDueDay, people, rooms, costs, waste });
         const period = isPeriod(body.period) ? body.period : currentPeriod();
         return redirect(res, `/calculator?period=${encodeURIComponent(period)}&message=${encodeURIComponent('Nastavení a náhled byly přepočítány.')}`);
       }
@@ -190,25 +228,36 @@ function createServer(config) {
         const period = url.searchParams.get('period');
         const personId = Number(url.searchParams.get('person'));
         if (!isPeriod(period) || !Number.isInteger(personId)) throw new Error('Neplatné údaje platby.');
-        const person = monthData(db, period).people.find((item) => item.id === personId);
+        const month = monthData(db, period);
+        const person = month.people.find((item) => item.id === personId);
         if (!person || person.balance_halere <= 0) throw new Error('Pro tuto osobu není co platit.');
         const iban = getSetting(db, 'payment_iban', '').replace(/\s+/g, '').toUpperCase();
         if (!/^CZ\d{22}$/.test(iban)) throw new Error('Správce zatím nenastavil účet pro QR platby.');
         const variableSymbol = `${period.replace('-', '')}${String(personId).padStart(2, '0')}`.slice(0, 10);
-        const message = `Luzicka ${period} ${person.name}`.replace(/[*:]/g, ' ').slice(0, 60);
-        const spd = `SPD*1.0*ACC:${iban}*AM:${(person.balance_halere / 100).toFixed(2)}*CC:CZK*X-VS:${variableSymbol}*MSG:${message}`;
+        const amount = person.payment_group_balance_halere || person.balance_halere;
+        const message = `Luzicka ${period} ${person.payment_group_names || person.name}`.replace(/[*:]/g, ' ').slice(0, 60);
+        const spd = `SPD*1.0*ACC:${iban}*AM:${(amount / 100).toFixed(2)}*CC:CZK*X-VS:${variableSymbol}*MSG:${message}`;
         const svg = await QRCode.toString(spd, { type: 'svg', margin: 1, width: 360, errorCorrectionLevel: 'M' });
         return send(res, 200, svg, 'image/svg+xml; charset=utf-8');
       }
 
       if (req.method === 'POST' && pathname === '/expenses') {
         const session = requireSession(req, res, true); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
+        const multipart = String(req.headers['content-type'] || '').startsWith('multipart/form-data');
+        const parsed = multipart ? await readMultipart(req) : { body: await readBody(req), file: null };
+        const { body } = parsed; verifyCsrf(session, body);
         const personIds = Array.isArray(body.person_id) ? body.person_id : body.person_id ? [body.person_id] : [];
         if (!isDate(body.occurred_on) || !isPeriod(body.period)) throw new Error('Neplatné datum nebo měsíc.');
         const description = String(body.description || '').trim();
         if (!description) throw new Error('Popis položky nesmí být prázdný.');
-        addExpense(db, {
+        const allowedAttachments = new Map([
+          ['application/pdf', '.pdf'], ['image/jpeg', '.jpg'], ['image/png', '.png'], ['image/heic', '.heic']
+        ]);
+        if (parsed.file?.size && !allowedAttachments.has(parsed.file.mimetype)) {
+          fs.rmSync(parsed.file.filepath, { force: true });
+          throw new Error('Příloha musí být PDF, JPG, PNG nebo HEIC.');
+        }
+        const expenseId = addExpense(db, {
           occurredOn: body.occurred_on,
           period: body.period,
           categoryCode: String(body.category_code),
@@ -217,7 +266,37 @@ function createServer(config) {
           paidByPersonId: body.paid_by_person_id ? Number(body.paid_by_person_id) : null,
           personIds
         });
+        if (parsed.file?.size) {
+          const extension = allowedAttachments.get(parsed.file.mimetype);
+          const attachmentDir = path.join(path.dirname(config.databasePath), 'attachments');
+          fs.mkdirSync(attachmentDir, { recursive: true });
+          const storedName = `${crypto.randomUUID()}${extension}`;
+          fs.renameSync(parsed.file.filepath, path.join(attachmentDir, storedName));
+          db.prepare(`INSERT INTO expense_attachments(expense_id,original_name,stored_name,mime_type,size_bytes)
+            VALUES (?,?,?,?,?)`).run(expenseId, String(parsed.file.originalFilename || 'příloha'), storedName, parsed.file.mimetype, parsed.file.size);
+          audit(db, 'create', 'expense_attachment', null, { expenseId, originalName: parsed.file.originalFilename, size: parsed.file.size });
+        }
         return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Položka byla přidána.')}`);
+      }
+
+      const attachmentDownload = pathname.match(/^\/attachments\/(\d+)$/);
+      if (req.method === 'GET' && attachmentDownload) {
+        const session = requireSession(req, res); if (!session) return;
+        const attachment = db.prepare('SELECT * FROM expense_attachments WHERE id=?').get(Number(attachmentDownload[1]));
+        if (!attachment) return send(res, 404, 'Příloha neexistuje.', 'text/plain; charset=utf-8');
+        const filePath = path.join(path.dirname(config.databasePath), 'attachments', attachment.stored_name);
+        if (!fs.existsSync(filePath)) return send(res, 404, 'Soubor přílohy chybí.', 'text/plain; charset=utf-8');
+        return send(res, 200, fs.readFileSync(filePath), attachment.mime_type, {
+          'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(attachment.original_name)}`
+        });
+      }
+
+      const expenseAttachment = pathname.match(/^\/expenses\/(\d+)\/attachment$/);
+      if (req.method === 'GET' && expenseAttachment) {
+        const session = requireSession(req, res); if (!session) return;
+        const attachment = db.prepare('SELECT id FROM expense_attachments WHERE expense_id=? ORDER BY id DESC LIMIT 1').get(Number(expenseAttachment[1]));
+        if (!attachment) return send(res, 404, 'Příloha neexistuje.', 'text/plain; charset=utf-8');
+        return redirect(res, `/attachments/${attachment.id}`);
       }
 
       const expenseVoid = pathname.match(/^\/expenses\/(\d+)\/void$/);
@@ -238,9 +317,35 @@ function createServer(config) {
         const body = await readBody(req); verifyCsrf(session, body);
         if (!isDate(body.paid_on) || !isPeriod(body.period)) throw new Error('Neplatné datum nebo měsíc.');
         const amount = parseMoney(body.amount); if (amount <= 0) throw new Error('Platba musí být kladná.');
-        const result = db.prepare('INSERT INTO payments(person_id,period,paid_on,amount_halere,note) VALUES (?,?,?,?,?)')
-          .run(Number(body.person_id), body.period, body.paid_on, amount, String(body.note || '').trim());
-        audit(db, 'create', 'payment', Number(result.lastInsertRowid), { ...body, amount_halere: amount });
+        const note = String(body.note || '').trim();
+        const personValue = String(body.person_id || '');
+        if (personValue.startsWith('group:')) {
+          const group = personValue.slice(6);
+          const month = monthData(db, body.period);
+          const members = month.people.filter((person) => person.payment_group === group);
+          if (members.length < 2) throw new Error('Platební skupina neexistuje.');
+          const allocations = splitWeighted(amount, members.map((person) => ({
+            id: person.id, weight: Math.max(0, person.balance_halere) || 1
+          })));
+          const insert = db.prepare('INSERT INTO payments(person_id,period,paid_on,amount_halere,note) VALUES (?,?,?,?,?)');
+          const ids = [];
+          db.exec('BEGIN IMMEDIATE');
+          try {
+            for (const allocation of allocations) {
+              const result = insert.run(allocation.personId, body.period, body.paid_on, allocation.amount, note || 'Společná platba');
+              ids.push(Number(result.lastInsertRowid));
+            }
+            audit(db, 'create', 'group_payment', null, { group, ids, amount_halere: amount, allocations });
+            db.exec('COMMIT');
+          } catch (error) {
+            db.exec('ROLLBACK');
+            throw error;
+          }
+        } else {
+          const result = db.prepare('INSERT INTO payments(person_id,period,paid_on,amount_halere,note) VALUES (?,?,?,?,?)')
+            .run(Number(personValue), body.period, body.paid_on, amount, note);
+          audit(db, 'create', 'payment', Number(result.lastInsertRowid), { ...body, amount_halere: amount });
+        }
         return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Platba byla přidána.')}`);
       }
 
@@ -330,7 +435,7 @@ function createServer(config) {
 
       if (req.method === 'GET' && pathname === '/audit') {
         const session = requireSession(req, res, true); if (!session) return;
-        const entries = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 500').all();
+        const entries = db.prepare('SELECT * FROM audit_log ORDER BY id DESC').all();
         return send(res, 200, auditPage({ config, session, entries }));
       }
 
