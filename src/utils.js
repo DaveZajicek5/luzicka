@@ -38,6 +38,14 @@ function formatMoney(halere) {
   }).format((Number(halere) || 0) / 100);
 }
 
+function formatMoneyInput(halere) {
+  return new Intl.NumberFormat('cs-CZ', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    useGrouping: true
+  }).format((Number(halere) || 0) / 100);
+}
+
 function formatDecimal(value, digits = 3) {
   return new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: digits }).format(value);
 }
@@ -121,6 +129,7 @@ module.exports = {
   parseMoney,
   parseDecimal,
   formatMoney,
+  formatMoneyInput,
   formatDecimal,
   currentPeriod,
   isPeriod,
