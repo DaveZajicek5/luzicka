@@ -122,12 +122,13 @@ function adminPage({ config, session, people, categories, templates, readings, m
 
   const body = `<section class="page-head"><div><div class="eyebrow">Administrace</div><h1>Zadávání a nastavení</h1><p class="muted">Změny se zapisují do auditní stopy. Chybné finanční položky se nemažou, ale stornují.</p></div></section>
   <section class="admin-grid">
-    <article class="panel"><h2>Nový náklad / vyúčtování</h2><form method="post" action="/expenses" enctype="multipart/form-data" class="stack">
+    <article class="panel" id="new-expense"><h2>Mimořádný náklad nebo vratka</h2><form method="post" action="/expenses" enctype="multipart/form-data" class="stack">
       <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
+      <label>Typ položky<select name="entry_type"><option value="charge">Doplatek / další náklad (+)</option><option value="credit">Sleva / přeplatek / vratka (−)</option></select></label>
       <div class="form-grid"><label>Datum<input type="date" name="occurred_on" required></label><label>Účetní měsíc<input type="month" name="period" required></label></div>
       <label>Kategorie<select name="category_code">${categoryOptions}</select></label>
       <label>Popis<input name="description" required placeholder="Např. záloha PRE / olej do kuchyně"></label>
-      <label>Částka v Kč<input name="amount" inputmode="decimal" required placeholder="Lze i záporně, např. -1250,50"></label>
+      <label>Částka v Kč<input name="amount" inputmode="decimal" required placeholder="Např. 1250,50"><span class="muted small">Zadávejte kladné číslo; znaménko určí zvolený typ položky.</span></label>
       <label>Zaplatil<select name="paid_by_person_id"><option value="">Neuvádět / hrazeno správcem</option>${personOptions}</select></label>
       <label>Příloha (volitelně)<input type="file" name="attachment" accept=".pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic"><span class="muted small">PDF nebo fotografie, maximálně 10 MB.</span></label>
       <fieldset><legend>Rozdělit mezi</legend><div class="checks">${peopleChecks}</div><p class="muted small">Použijí se aktuální váhy osob; konkrétní částky se uloží napevno do historie.</p></fieldset>
@@ -194,7 +195,10 @@ function calculatorPage({ config, session, period, data, message, error }) {
     <small>${group.names.length > 1 ? 'jedna společná platba' : 'samostatná platba'}</small>
   </article>`).join('');
   const generation = data.generated
-    ? `<div class="completion-state"><div class="completion-icon">✓</div><div><strong>Tento měsíc je zaúčtovaný</strong><p>Částky už jsou v účtech nájemníků. Další změny nastavení ovlivní až nový měsíc.</p></div><a class="button secondary" href="/?period=${escapeHtml(period)}">Otevřít přehled</a></div>`
+    ? `<div class="completion-state"><div class="completion-icon">✓</div><div><strong>Tento měsíc je zaúčtovaný</strong><p>Částky už jsou v účtech nájemníků. Platby se evidují zvlášť.</p></div>
+        <a class="button secondary" href="/?period=${escapeHtml(period)}">Otevřít přehled</a>
+        <form method="post" action="/calculator/reopen" class="reopen-form"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><input type="hidden" name="period" value="${escapeHtml(period)}"><input type="hidden" name="reason" value="Vráceno k opravě předpisu"><button class="danger-button">Vrátit k úpravě</button></form>
+      </div>`
     : `<form method="post" action="/calculator/generate" class="primary-action">
         <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><input type="hidden" name="period" value="${escapeHtml(period)}">
         <div><span class="eyebrow">Poslední krok</span><strong>Zaúčtovat ${formatMoney(totalCosts)}</strong><p>Vytvoří se ${data.lines.length} položek a připíšou se částky nájemníkům.</p></div>
@@ -211,7 +215,15 @@ function calculatorPage({ config, session, period, data, message, error }) {
       <div class="panel-head"><div><h2>Kontrola rozdělení</h2><p class="muted small">Každý řádek ukazuje celkový náklad a přesný podíl každého obyvatele.</p></div></div>
       <div class="table-wrap allocation-matrix"><table><thead><tr><th>Náklad</th><th>Celkem</th>${header}</tr></thead><tbody>${rows}${totals}</tbody></table></div>
     </section>
-    <section class="panel action-panel">${generation}</section>`;
+    <section class="panel action-panel">${generation}</section>
+    <section class="panel adjustment-guide">
+      <div class="panel-head"><div><h2>Mimořádné položky</h2><p class="muted small">Přidávají se k již vytvořenému předpisu; není kvůli nim potřeba celý měsíc rušit.</p></div><a class="button secondary" href="/admin#new-expense">Přidat položku</a></div>
+      <div class="guidance-grid">
+        <div><strong>Dodatečný náklad</strong><p>Například oprava nebo doplatek vyúčtování. Zvýší částku k úhradě.</p></div>
+        <div><strong>Sleva nebo přeplatek</strong><p>Zadejte jako vratku. Sníží dluh, případně vytvoří přeplatek.</p></div>
+        <div><strong>Přijatá platba</strong><p>Nemění náklady. Jen snižuje zbývající částku konkrétního měsíce.</p></div>
+      </div>
+    </section>`;
   return layout({ title: 'Měsíční předpis', body, session, config, period, message, error });
 }
 
