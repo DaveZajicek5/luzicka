@@ -18,7 +18,7 @@ const {
   parseMoney, parseDecimal, currentPeriod, isPeriod, isDate, csvCell, splitWeighted
 } = require('./utils');
 const {
-  calculatorData, saveCalculatorSettings, generateCalculatorMonth, getSetting
+  calculatorData, saveCalculatorSettings, generateCalculatorMonth, reopenCalculatorMonth, getSetting
 } = require('./calculator');
 const {
   loginPage, dashboardPage, adminPage, auditPage, printPage,
@@ -27,7 +27,8 @@ const {
 
 const CSS = Buffer.concat([
   fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css')),
-  fs.readFileSync(path.join(__dirname, '..', 'public', 'calculator.css'))
+  fs.readFileSync(path.join(__dirname, '..', 'public', 'calculator.css')),
+  fs.readFileSync(path.join(__dirname, '..', 'public', 'adjustments.css'))
 ]);
 
 function readBody(req, limit = 1024 * 1024) {
@@ -235,6 +236,15 @@ function createServer(config) {
         return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Měsíční předpis byl vytvořen a připsán nájemníkům.')}`);
       }
 
+      if (req.method === 'POST' && pathname === '/calculator/reopen') {
+        const session = requireSession(req, res, true); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
+        if (!isPeriod(body.period)) throw new Error('Neplatný měsíc.');
+        const reason = String(body.reason || 'Vráceno k opravě předpisu').trim();
+        reopenCalculatorMonth(db, audit, body.period, reason);
+        return redirect(res, `/calculator?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Předpis byl stornován a měsíc je znovu připravený k úpravě.')}`);
+      }
+
       if (req.method === 'GET' && pathname === '/payment-qr.svg') {
         const session = requireSession(req, res); if (!session) return;
         const period = url.searchParams.get('period');
@@ -269,12 +279,15 @@ function createServer(config) {
           fs.rmSync(parsed.file.filepath, { force: true });
           throw new Error('Příloha musí být PDF, JPG, PNG nebo HEIC.');
         }
+        let amountHalere = parseMoney(body.amount);
+        if (body.entry_type === 'credit') amountHalere = -Math.abs(amountHalere);
+        else if (body.entry_type === 'charge') amountHalere = Math.abs(amountHalere);
         const expenseId = addExpense(db, {
           occurredOn: body.occurred_on,
           period: body.period,
           categoryCode: String(body.category_code),
           description,
-          amountHalere: parseMoney(body.amount),
+          amountHalere,
           paidByPersonId: body.paid_by_person_id ? Number(body.paid_by_person_id) : null,
           personIds
         });
