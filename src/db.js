@@ -5,6 +5,7 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { splitWeighted } = require('./utils');
 const { migrateCalculator, seedCalculator, getSetting } = require('./calculator');
+const { householdReminders } = require('./household');
 
 const CATEGORY_SEED = [
   ['rent', 'Nájemné', 'monthly'],
@@ -16,7 +17,8 @@ const CATEGORY_SEED = [
   ['gas_settlement', 'Vyúčtování plynu', 'settlement'],
   ['building_settlement', 'Vyúčtování služeb domu', 'settlement'],
   ['shared_purchase', 'Společný nákup', 'adhoc'],
-  ['other', 'Ostatní', 'adhoc']
+  ['other', 'Ostatní', 'adhoc'],
+  ['insurance', 'Pojištění domácnosti', 'monthly']
 ];
 
 function openDatabase(databasePath) {
@@ -211,7 +213,7 @@ function generateRecurring(db, period) {
 
 function monthData(db, period) {
   const people = db.prepare(`
-    SELECT p.id,p.name,p.active,p.is_manager,
+    SELECT p.id,p.name,p.active,p.is_manager,p.payment_group,
       COALESCE(SUM(CASE WHEN e.status='active' THEN a.amount_halere ELSE 0 END),0) AS due_halere,
       COALESCE((SELECT SUM(pay.amount_halere) FROM payments pay WHERE pay.person_id=p.id AND pay.period=? AND pay.status='active'),0) AS paid_halere
     FROM people p
@@ -224,6 +226,7 @@ function monthData(db, period) {
 
   const expenses = db.prepare(`
     SELECT e.*, c.label AS category_label, payer.name AS payer_name,
+      (SELECT COUNT(*) FROM expense_attachments att WHERE att.expense_id=e.id) AS attachment_count,
       GROUP_CONCAT(p.name || ': ' || printf('%.2f', a.amount_halere/100.0), ' | ') AS allocation_text
     FROM expenses e
     JOIN categories c ON c.code=e.category_code
@@ -254,6 +257,21 @@ function monthData(db, period) {
     ORDER BY meter_type, read_on DESC, id DESC
   `).all(period).filter((row, index, arr) => arr.findIndex((x) => x.meter_type === row.meter_type) === index);
 
+  const paymentGroups = new Map();
+  for (const person of people) {
+    const key = person.payment_group || `person-${person.id}`;
+    if (!paymentGroups.has(key)) paymentGroups.set(key, []);
+    paymentGroups.get(key).push(person);
+  }
+  for (const members of paymentGroups.values()) {
+    const groupBalance = members.reduce((sum, person) => sum + person.balance_halere, 0);
+    members.forEach((person, index) => {
+      person.payment_group_balance_halere = groupBalance;
+      person.payment_group_representative = index === 0;
+      person.payment_group_names = members.map((member) => member.name).join(' + ');
+    });
+  }
+
   return {
     people,
     expenses,
@@ -261,7 +279,8 @@ function monthData(db, period) {
     categories,
     meterReadings,
     totalHalere: expenses.filter((e) => e.status === 'active').reduce((sum, e) => sum + e.amount_halere, 0),
-    paymentEnabled: /^CZ[0-9A-Z]{22}$/.test(getSetting(db, 'payment_iban', '').replaceAll(' ', '').toUpperCase())
+    paymentEnabled: /^CZ[0-9A-Z]{22}$/.test(getSetting(db, 'payment_iban', '').replaceAll(' ', '').toUpperCase()),
+    reminders: householdReminders(db, period)
   };
 }
 
