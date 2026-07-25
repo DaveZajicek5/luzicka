@@ -206,7 +206,28 @@ function generateCalculatorMonth(db, audit, period) {
   }
 }
 
+function reopenCalculatorMonth(db, audit, period, reason) {
+  const run = db.prepare('SELECT * FROM calculator_runs WHERE period=?').get(period);
+  if (!run) throw new Error('Tento měsíc není zaúčtovaný.');
+  const expenseIds = JSON.parse(run.expense_ids_json);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const voidExpense = db.prepare(`UPDATE expenses
+      SET status='void',voided_at=CURRENT_TIMESTAMP,void_reason=?
+      WHERE id=? AND status='active'`);
+    let voided = 0;
+    for (const expenseId of expenseIds) voided += voidExpense.run(reason, expenseId).changes;
+    db.prepare('DELETE FROM calculator_runs WHERE period=?').run(period);
+    audit(db, 'reopen', 'calculator_month', null, { period, reason, expenseIds, voided });
+    db.exec('COMMIT');
+    return { voided };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 module.exports = {
   migrateCalculator, seedCalculator, getSetting, calculatorData,
-  saveCalculatorSettings, generateCalculatorMonth
+  saveCalculatorSettings, generateCalculatorMonth, reopenCalculatorMonth
 };
