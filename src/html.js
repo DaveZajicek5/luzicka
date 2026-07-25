@@ -22,7 +22,7 @@ function layout({ title, body, session, config, period, message, error, print = 
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>${escapeHtml(title)} · ${escapeHtml(config.householdName)}</title>
-  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/app.css?v=20260725-3">
 </head>
 <body class="${print ? 'print-view' : ''}">
 ${nav}
@@ -128,15 +128,32 @@ function dashboardPage({ config, session, period, data, message, error }) {
   const paymentRows = data.payments.filter((payment) => payment.status === 'active').map((payment) =>
     `<li><span><strong>${escapeHtml(payment.person_name)}</strong><small>${escapeHtml(payment.paid_on)} · ${escapeHtml(payment.note || 'bez poznámky')}</small></span><strong>${formatMoney(payment.amount_halere)}</strong></li>`
   ).join('') || '<li class="empty">Zatím nebyla zaznamenána žádná platba.</li>';
-  const reminders = data.reminders.map((reminder) => `<div class="notice reminder">${escapeHtml(reminder)}</div>`).join('');
+  const reminders = data.reminders.length ? `<section class="reminder-group" aria-label="Připomínky">
+    <div class="reminder-icon" aria-hidden="true">!</div>
+    <div><strong>Je potřeba doplnit</strong><ul>${data.reminders.map((reminder) => `<li>${escapeHtml(reminder)}</li>`).join('')}</ul></div>
+  </section>` : '';
+  const workflow = data.generated ? `<ol class="workflow-steps" aria-label="Postup platby">
+    <li class="active"><span>1</span>Zkontrolovat náklady</li>
+    <li><span>2</span>Potvrdit souhrn</li>
+    <li><span>3</span>Zaplatit přes QR</li>
+  </ol>` : '';
+  const summary = data.generated ? `
+    <div class="summary-title"><span>2–3</span><div><h2>Potvrzení a platba</h2><p>Vyberte svůj účet.</p></div></div>
+    <div class="statement-cards">${statementCards(data.people, period, data.paymentEnabled, session, true)}</div>` : `
+    <article class="pending-summary">
+      <span class="pending-summary-icon" aria-hidden="true">⌛</span>
+      <h2>Vyúčtování se připravuje</h2>
+      <p>Jakmile správce měsíc zaúčtuje, objeví se zde vaše částka a QR kód.</p>
+      ${session.role === 'admin' ? `<a class="button" href="/calculator?period=${escapeHtml(period)}">Vytvořit vyúčtování</a>` : ''}
+    </article>`;
 
   const body = `
     <section class="page-head statement-head">
-      <div><div class="eyebrow">Vyúčtování domácnosti</div><h1>${escapeHtml(periodLabel(period))}</h1><p class="muted">Zkontrolujte položky, potvrďte svůj souhrn a potom použijte QR kód.</p></div>
+      <div><div class="eyebrow">Vyúčtování domácnosti</div><h1>${escapeHtml(periodLabel(period))}</h1><p class="muted">${data.generated ? 'Zkontrolujte položky, potvrďte svůj souhrn a potom použijte QR kód.' : 'Měsíc zatím čeká na vytvoření vyúčtování.'}</p></div>
       <form method="get" action="/" class="period-picker"><label>Měsíc<input type="month" name="period" value="${escapeHtml(period)}"></label><button>Zobrazit</button></form>
     </section>
     ${reminders}
-    <ol class="workflow-steps"><li class="active"><span>1</span>Zkontrolovat náklady</li><li><span>2</span>Potvrdit souhrn</li><li><span>3</span>Zaplatit přes QR</li></ol>
+    ${workflow}
     <section class="statement-layout">
       <article class="panel cost-list">
         <div class="panel-head"><div><h2>Co se tento měsíc platí</h2><p class="muted small">${activeExpenses.length} položek · celkem ${formatMoney(data.totalHalere)}</p></div><div class="actions"><a class="button secondary" href="/one-off">Přidat náklad</a>${session.role === 'admin' ? `<a class="button secondary" href="/calculator?period=${escapeHtml(period)}">Upravit vyúčtování</a>` : ''}</div></div>
@@ -144,8 +161,7 @@ function dashboardPage({ config, session, period, data, message, error }) {
         ${voidRows ? `<details class="void-list"><summary>Stornované položky (${voidExpenses.length})</summary><ul>${voidRows}</ul></details>` : ''}
       </article>
       <aside class="statement-summary">
-        <div class="summary-title"><span>2–3</span><div><h2>Potvrzení a platba</h2><p>Vyberte svůj účet.</p></div></div>
-        <div class="statement-cards">${statementCards(data.people, period, data.paymentEnabled, session, data.generated)}</div>
+        ${summary}
       </aside>
     </section>
     <details class="panel secondary-detail"><summary>Další možnosti a historie plateb</summary>
@@ -167,7 +183,7 @@ function oneOffForm({ session, people, categories, period }) {
   const categoryOptions = categories.map((category) => `<option value="${escapeHtml(category.code)}">${escapeHtml(category.label)}</option>`).join('');
   const peopleChecks = people.filter((person) => person.active).map((person) =>
     `<label class="check"><input type="checkbox" name="person_id" value="${person.id}" checked> ${escapeHtml(person.name)}</label>`).join('');
-  return `<article class="panel focused-form one-off-form"><div class="task-heading"><span>＋</span><div><h2>Jednorázový náklad</h2><p>Zadejte výdaj, který už někdo z domácnosti zaplatil. Automaticky se zařadí do zvoleného vyúčtování.</p></div></div>
+  return `<article class="panel focused-form one-off-form">
     <form method="post" action="/expenses" enctype="multipart/form-data" class="stack">
       <input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">
       <div class="form-grid"><label>Datum úhrady<input type="date" name="occurred_on" value="${new Date().toISOString().slice(0, 10)}" required></label><label>Zaúčtovat do měsíce<input type="month" name="period" value="${escapeHtml(period)}" required><span class="muted small">Výchozí je příští měsíc.</span></label></div>
@@ -175,7 +191,7 @@ function oneOffForm({ session, people, categories, period }) {
       <div class="form-grid"><label>Částka v Kč<input name="amount" inputmode="decimal" required placeholder="Např. 1250,50"></label><label>Kategorie<select name="category_code">${categoryOptions}</select></label></div>
       <label>Zaplatil/a<select name="paid_by_person_id"><option value="">Neuvádět</option>${personOptions}</select></label>
       <fieldset><legend>Mezi koho náklad rozdělit</legend><div class="checks">${peopleChecks}</div></fieldset>
-      <label>Účtenka nebo faktura (volitelně)<input type="file" name="attachment" accept=".pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic"></label>
+      <label>Účtenka nebo faktura <span class="optional">(volitelné)</span><input type="file" name="attachment" accept=".pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic"><span class="muted small">PDF nebo fotografie, maximálně 10 MB</span></label>
       <input type="hidden" name="entry_type" value="charge">
       <button>Zařadit do vyúčtování</button>
     </form>
@@ -183,7 +199,7 @@ function oneOffForm({ session, people, categories, period }) {
 }
 
 function oneOffPage({ config, session, people, categories, period, message, error }) {
-  const body = `<section class="page-head"><div><div class="eyebrow">Společný výdaj</div><h1>Přidat náklad</h1><p class="muted">Stačí částka, kdo zaplatil a mezi koho se má rozdělit.</p></div><a class="button secondary" href="/?period=${escapeHtml(period)}">← Zpět na přehled</a></section>
+  const body = `<section class="page-head compact-form-head"><div><div class="eyebrow">Společný výdaj</div><h1>Nový náklad</h1><p class="muted">Výdaj, který už někdo zaplatil, zařadíme do vybraného měsíce.</p></div><a class="back-link" href="/?period=${escapeHtml(period)}">← Zpět na přehled</a></section>
     <div class="narrow-workflow">${oneOffForm({ session, people, categories, period })}</div>`;
   return layout({ title: 'Přidat náklad', body, session, config, period, message, error });
 }
@@ -225,15 +241,22 @@ function adminPage({ config, session, people, categories, templates, readings, c
     <details class="add-rule"><summary>＋ Přidat pravidelný náklad</summary><form method="post" action="/cost-rules" class="form-grid"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><label>Název<input name="label" required></label><label>Částka v Kč<input name="amount" required></label><label>Rozdělení<select name="allocation_rule">${rules.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><button>Přidat</button></form></details>
   </section>`;
   const residents = `<section class="panel"><div class="panel-head"><div><h2>Obyvatelé</h2><p class="muted small">Běžně není potřeba měnit. Plochy pokojů jsou v nastavení domácnosti.</p></div></div><div class="table-wrap"><table><thead><tr><th>Jméno</th><th>Váha</th><th>Stav</th><th>Správce</th><th></th></tr></thead><tbody>${peopleRows}</tbody></table></div></section>`;
-  const home = `<section class="task-grid">
-    <a href="/calculator" class="task-card primary-task"><span>1</span><div><strong>Vytvořit měsíční vyúčtování</strong><p>Zkontrolovat pravidelné a jednorázové položky, rozdělení a zaúčtovat měsíc.</p></div></a>
-    <a href="/one-off" class="task-card"><span>＋</span><div><strong>Přidat jednorázový náklad</strong><p>Výdaj obyvatele nebo doplatek do dalšího vyúčtování.</p></div></a>
-    <a href="/admin?view=payments" class="task-card"><span>✓</span><div><strong>Zapsat přijatou platbu</strong><p>Po přijetí platby na účet aktualizovat zůstatek obyvatele.</p></div></a>
-    <a href="/admin?view=meters" class="task-card"><span>⌁</span><div><strong>Zapsat odečet</strong><p>Měsíční stav elektřiny nebo plynu.</p></div></a>
-  </section>`;
+  const home = `<section class="panel admin-tasks">
+    <div class="admin-tasks-head"><h2>Měsíční úkoly</h2><p>Vyberte, co chcete právě udělat.</p></div>
+    <a href="/calculator" class="task-row task-row-primary"><span class="task-row-icon">1</span><span class="task-row-copy"><strong>Vytvořit měsíční vyúčtování</strong><small>Zkontrolovat položky, rozdělení a zaúčtovat měsíc</small></span><span class="task-row-status">Hlavní krok</span><span class="task-row-arrow">›</span></a>
+    <a href="/one-off" class="task-row"><span class="task-row-icon">＋</span><span class="task-row-copy"><strong>Přidat jednorázový náklad</strong><small>Výdaj obyvatele nebo doplatek do dalšího měsíce</small></span><span class="task-row-status">Podle potřeby</span><span class="task-row-arrow">›</span></a>
+    <a href="/admin?view=payments" class="task-row"><span class="task-row-icon">✓</span><span class="task-row-copy"><strong>Zapsat přijatou platbu</strong><small>Aktualizovat zůstatek po přijetí platby</small></span><span class="task-row-status">Po úhradě</span><span class="task-row-arrow">›</span></a>
+    <a href="/admin?view=meters" class="task-row"><span class="task-row-icon">⌁</span><span class="task-row-copy"><strong>Zapsat odečet</strong><small>Měsíční stav elektřiny nebo plynu</small></span><span class="task-row-status">K 1. dni</span><span class="task-row-arrow">›</span></a>
+  </section>
+  <section class="admin-settings-links"><h2>Nastavení</h2><div>
+    <a href="/admin?view=recurring"><strong>Pravidelné náklady</strong><span>částky a způsob rozdělení</span></a>
+    <a href="/calculator/settings"><strong>Pokoje a platby</strong><span>plochy, účet a svoz odpadu</span></a>
+    <a href="/admin?view=residents"><strong>Obyvatelé</strong><span>jména, váhy a aktivní účty</span></a>
+  </div></section>`;
   const content = ({ home, 'one-off': oneOff, payments, meters, recurring, residents })[view] || home;
-  const body = `<section class="page-head"><div><div class="eyebrow">Administrace</div><h1>Co potřebujete udělat?</h1><p class="muted">Vyberte jeden úkol. Zobrazí se pouze údaje, které k němu potřebujete.</p></div></section>
-    <nav class="task-nav"><a href="/admin" ${view === 'home' ? 'class="active"' : ''}>Úkoly</a><a href="/admin?view=recurring" ${view === 'recurring' ? 'class="active"' : ''}>Pravidelné náklady</a><a href="/one-off">Jednorázový náklad</a><a href="/admin?view=payments" ${view === 'payments' ? 'class="active"' : ''}>Platba</a><a href="/admin?view=meters" ${view === 'meters' ? 'class="active"' : ''}>Odečet</a><a href="/admin?view=residents" ${view === 'residents' ? 'class="active"' : ''}>Obyvatelé</a></nav>${content}`;
+  const subnav = view === 'home' ? '' : `<nav class="task-nav"><a href="/admin">← Úkoly</a><a href="/admin?view=recurring" ${view === 'recurring' ? 'class="active"' : ''}>Pravidelné náklady</a><a href="/admin?view=payments" ${view === 'payments' ? 'class="active"' : ''}>Platba</a><a href="/admin?view=meters" ${view === 'meters' ? 'class="active"' : ''}>Odečet</a><a href="/admin?view=residents" ${view === 'residents' ? 'class="active"' : ''}>Obyvatelé</a></nav>`;
+  const body = `<section class="page-head admin-page-head"><div><div class="eyebrow">Administrace</div><h1>${view === 'home' ? 'Správa domácnosti' : 'Upravit údaje'}</h1><p class="muted">${view === 'home' ? 'Běžné úkoly jsou nahoře, dlouhodobá nastavení odděleně.' : 'Zobrazené jsou jen údaje potřebné pro tento úkol.'}</p></div></section>
+    ${subnav}${content}`;
   return layout({ title: 'Správa', body, session, config, message, error });
 }
 
@@ -400,12 +423,18 @@ function auditSummary(entry, details) {
   return entry.entity_id ? `Záznam #${entry.entity_id}` : 'Systémový záznam';
 }
 
+function auditTime(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!match) return value || '';
+  return `${Number(match[3])}. ${Number(match[2])}. ${match[1]} · ${match[4]}:${match[5]}`;
+}
+
 function auditPage({ config, session, entries }) {
   const rows = entries.map((entry) => {
     let details = {};
     try { details = JSON.parse(entry.details_json || '{}'); } catch {}
-    return `<article class="audit-entry"><div class="audit-time">${escapeHtml(entry.created_at)}</div><div class="audit-copy"><strong>${escapeHtml(auditLabel(entry))}</strong><span>${escapeHtml(auditSummary(entry, details))}</span></div>
-      <details><summary>Detail</summary><code>${escapeHtml(JSON.stringify(details, null, 2))}</code></details></article>`;
+    return `<article class="audit-entry"><span class="audit-marker" aria-hidden="true"></span><div class="audit-copy"><strong>${escapeHtml(auditLabel(entry))}</strong><span>${escapeHtml(auditSummary(entry, details))}</span></div><time class="audit-time">${escapeHtml(auditTime(entry.created_at))}</time>
+      <details><summary>Zobrazit detail</summary><code>${escapeHtml(JSON.stringify(details, null, 2))}</code></details></article>`;
   }).join('') || '<p class="empty">Zatím tu nejsou žádné změny.</p>';
   return layout({ title: 'Audit', session, config, body: `<section class="page-head"><div><div class="eyebrow">Historie změn</div><h1>Audit</h1><p class="muted">Na první pohled je vidět, co se stalo. Technický detail otevřete jen při řešení konkrétní změny.</p></div></section><section class="panel audit-list">${rows}</section>` });
 }
