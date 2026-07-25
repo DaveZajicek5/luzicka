@@ -4,6 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const querystring = require('node:querystring');
+const QRCode = require('qrcode');
 const {
   openDatabase, audit, listPeople, listCategories, addExpense, generateRecurring, monthData
 } = require('./db');
@@ -13,9 +14,15 @@ const {
 const {
   parseMoney, parseDecimal, currentPeriod, isPeriod, isDate, csvCell
 } = require('./utils');
-const { loginPage, dashboardPage, adminPage, auditPage, printPage } = require('./html');
+const {
+  calculatorData, saveCalculatorSettings, generateCalculatorMonth, getSetting
+} = require('./calculator');
+const { loginPage, dashboardPage, adminPage, auditPage, printPage, calculatorPage } = require('./html');
 
-const CSS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css'));
+const CSS = Buffer.concat([
+  fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css')),
+  fs.readFileSync(path.join(__dirname, '..', 'public', 'calculator.css'))
+]);
 
 function readBody(req, limit = 1024 * 1024) {
   return new Promise((resolve, reject) => {
@@ -128,6 +135,70 @@ function createServer(config) {
       if (req.method === 'GET' && pathname === '/admin') {
         const session = requireSession(req, res, true); if (!session) return;
         return send(res, 200, adminPage({ config, session, ...adminData(), message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || '' }));
+      }
+
+      if (req.method === 'GET' && pathname === '/calculator') {
+        const session = requireSession(req, res, true); if (!session) return;
+        const period = isPeriod(url.searchParams.get('period')) ? url.searchParams.get('period') : currentPeriod();
+        return send(res, 200, calculatorPage({
+          config, session, period, data: calculatorData(db, period),
+          message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
+        }));
+      }
+
+      if (req.method === 'POST' && pathname === '/calculator/settings') {
+        const session = requireSession(req, res, true); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
+        const totalArea = parseDecimal(body.total_area_m2);
+        const paymentDueDay = Number(body.payment_due_day);
+        const paymentIban = String(body.payment_iban || '').replace(/\s+/g, '').toUpperCase();
+        if (!(totalArea > 0)) throw new Error('Celková plocha bytu musí být kladná.');
+        if (!Number.isInteger(paymentDueDay) || paymentDueDay < 1 || paymentDueDay > 28) throw new Error('Den splatnosti musí být mezi 1 a 28.');
+        if (paymentIban && !/^CZ\d{22}$/.test(paymentIban)) throw new Error('Český IBAN musí mít tvar CZ a 22 číslic.');
+        const people = listPeople(db, true).map((person) => {
+          const privateArea = parseDecimal(body[`person_area_${person.id}`]);
+          if (privateArea < 0) throw new Error(`Plocha osoby ${person.name} nesmí být záporná.`);
+          return { id: person.id, privateArea };
+        });
+        if (people.reduce((sum, person) => sum + person.privateArea, 0) > totalArea) {
+          throw new Error('Součet soukromých ploch je větší než plocha bytu.');
+        }
+        const allowedRules = ['equal', 'area_common', 'private_area', 'weights'];
+        const current = calculatorData(db, body.period || currentPeriod());
+        const costs = current.costs.map((cost) => {
+          const allocationRule = String(body[`cost_rule_${cost.code}`] || '');
+          if (!allowedRules.includes(allocationRule)) throw new Error(`Neplatné pravidlo pro ${cost.label}.`);
+          const amountHalere = parseMoney(body[`cost_amount_${cost.code}`]);
+          if (amountHalere < 0) throw new Error(`Částka ${cost.label} nesmí být záporná.`);
+          return { code: cost.code, amountHalere, allocationRule };
+        });
+        saveCalculatorSettings(db, audit, { totalArea, paymentIban, paymentDueDay, people, costs });
+        const period = isPeriod(body.period) ? body.period : currentPeriod();
+        return redirect(res, `/calculator?period=${encodeURIComponent(period)}&message=${encodeURIComponent('Nastavení a náhled byly přepočítány.')}`);
+      }
+
+      if (req.method === 'POST' && pathname === '/calculator/generate') {
+        const session = requireSession(req, res, true); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
+        if (!isPeriod(body.period)) throw new Error('Neplatný měsíc.');
+        generateCalculatorMonth(db, audit, body.period);
+        return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Měsíční předpis byl vytvořen a připsán nájemníkům.')}`);
+      }
+
+      if (req.method === 'GET' && pathname === '/payment-qr.svg') {
+        const session = requireSession(req, res); if (!session) return;
+        const period = url.searchParams.get('period');
+        const personId = Number(url.searchParams.get('person'));
+        if (!isPeriod(period) || !Number.isInteger(personId)) throw new Error('Neplatné údaje platby.');
+        const person = monthData(db, period).people.find((item) => item.id === personId);
+        if (!person || person.balance_halere <= 0) throw new Error('Pro tuto osobu není co platit.');
+        const iban = getSetting(db, 'payment_iban', '').replace(/\s+/g, '').toUpperCase();
+        if (!/^CZ\d{22}$/.test(iban)) throw new Error('Správce zatím nenastavil účet pro QR platby.');
+        const variableSymbol = `${period.replace('-', '')}${String(personId).padStart(2, '0')}`.slice(0, 10);
+        const message = `Luzicka ${period} ${person.name}`.replace(/[*:]/g, ' ').slice(0, 60);
+        const spd = `SPD*1.0*ACC:${iban}*AM:${(person.balance_halere / 100).toFixed(2)}*CC:CZK*X-VS:${variableSymbol}*MSG:${message}`;
+        const svg = await QRCode.toString(spd, { type: 'svg', margin: 1, width: 360, errorCorrectionLevel: 'M' });
+        return send(res, 200, svg, 'image/svg+xml; charset=utf-8');
       }
 
       if (req.method === 'POST' && pathname === '/expenses') {
