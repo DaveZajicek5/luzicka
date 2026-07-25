@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { createServer } = require('../src/app');
 const { splitWeighted } = require('../src/utils');
-const { openDatabase, audit, monthData, transferCredit } = require('../src/db');
+const { openDatabase, audit, addExpense, voidExpense, monthData, transferCredit } = require('../src/db');
 const { calculatorData, generateCalculatorMonth, reopenCalculatorMonth } = require('../src/calculator');
 
 function config() {
@@ -98,11 +98,39 @@ test('přeplatek se převede jako sleva do dalšího měsíce a zdrojový měsí
   db.close();
 });
 
+test('jednorázový náklad započte plátci úhradu, ale ponechá mu jeho podíl', () => {
+  const db = openDatabase(':memory:');
+  const people = db.prepare('SELECT * FROM people ORDER BY id').all();
+  const expenseId = addExpense(db, {
+    occurredOn: '2026-08-05',
+    period: '2026-08',
+    categoryCode: 'shared_purchase',
+    description: 'Společný nákup',
+    amountHalere: 10000,
+    paidByPersonId: people[0].id,
+    personIds: people.map((person) => person.id)
+  });
+  const month = monthData(db, '2026-08');
+  const payer = month.people.find((person) => person.id === people[0].id);
+  assert.equal(payer.due_halere, 2500);
+  assert.equal(payer.paid_halere, 10000);
+  assert.equal(payer.balance_halere, -7500);
+  assert.deepEqual(month.people.slice(1).map((person) => person.balance_halere), [2500, 2500, 2500]);
+  assert.equal(month.people.reduce((sum, person) => sum + person.balance_halere, 0), 0);
+  assert.equal(db.prepare('SELECT source_expense_id FROM payments WHERE person_id=?').get(people[0].id).source_expense_id, expenseId);
+
+  voidExpense(db, expenseId, 'Test storna');
+  const afterVoid = monthData(db, '2026-08');
+  assert.equal(afterVoid.people.reduce((sum, person) => sum + person.balance_halere, 0), 0);
+  assert.equal(db.prepare('SELECT status FROM payments WHERE source_expense_id=?').get(expenseId).status, 'void');
+  db.close();
+});
+
 test('viewer neotevře administraci, admin přidá položku a export ji obsahuje', async (t) => {
   const { server, base } = await start();
   t.after(() => server.close());
 
-  const cssResponse = await fetch(`${base}/app.css?v=20260725-4`);
+  const cssResponse = await fetch(`${base}/app.css?v=20260725-5`);
   const css = await cssResponse.text();
   assert.equal(cssResponse.status, 200);
   assert.match(css, /\.topbar a\s*\{[^}]*color:\s*#fff/);
@@ -123,6 +151,8 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   const csrf = csrfFrom(html);
   assert.ok(csrf);
   assert.match(html, /Pravidelné náklady/);
+  assert.match(html, /class="rule-editor"/);
+  assert.match(html, /data-money/);
 
   const calculator = await fetch(`${base}/calculator?period=2026-07`, { headers: { cookie: admin.cookie } });
   const calculatorHtml = await calculator.text();
