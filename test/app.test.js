@@ -53,12 +53,12 @@ test('kalkulačka rozdělí známé náklady přesně a měsíc nevytvoří dvak
   const calculation = calculatorData(db, '2026-08');
   assert.equal(calculation.totalArea, 113);
   assert.equal(calculation.commonArea, 46.92);
-  assert.equal(calculation.lines.reduce((sum, line) => sum + line.amount_halere, 0), 3159900);
-  assert.equal(calculation.totals.reduce((sum, person) => sum + person.amount_halere, 0), 3159900);
+  assert.equal(calculation.lines.reduce((sum, line) => sum + line.amount_halere, 0), 3182900);
+  assert.equal(calculation.totals.reduce((sum, person) => sum + person.amount_halere, 0), 3182900);
 
   const generated = generateCalculatorMonth(db, audit, '2026-08');
-  assert.equal(generated.expenseIds.length, 5);
-  assert.equal(db.prepare("SELECT SUM(amount_halere) AS total FROM expenses WHERE period='2026-08'").get().total, 3159900);
+  assert.equal(generated.expenseIds.length, 6);
+  assert.equal(db.prepare("SELECT SUM(amount_halere) AS total FROM expenses WHERE period='2026-08'").get().total, 3182900);
   assert.throws(() => generateCalculatorMonth(db, audit, '2026-08'), /už byl/);
   db.close();
 });
