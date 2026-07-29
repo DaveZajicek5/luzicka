@@ -130,7 +130,7 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   const { server, base } = await start();
   t.after(() => server.close());
 
-  const cssResponse = await fetch(`${base}/app.css?v=20260725-5`);
+  const cssResponse = await fetch(`${base}/app.css?v=20260729-1`);
   const css = await cssResponse.text();
   assert.equal(cssResponse.status, 200);
   assert.match(css, /\.topbar a\s*\{[^}]*color:\s*#fff/);
@@ -144,6 +144,13 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   const oneOff = await fetch(`${base}/one-off`, { headers: { cookie: viewer.cookie } });
   assert.equal(oneOff.status, 200);
   assert.match(await oneOff.text(), /Nový náklad/);
+  const services = await fetch(`${base}/services`, { headers: { cookie: viewer.cookie } });
+  const servicesHtml = await services.text();
+  assert.equal(services.status, 200);
+  assert.match(servicesHtml, /Všechno na jednom místě/);
+  assert.match(servicesHtml, /luzicka\.tailef7327\.ts\.net:5055/);
+  assert.match(servicesHtml, /Sonarr/);
+  assert.match(servicesHtml, /Prowlarr/);
 
   const admin = await login(base, 'admin-pass');
   const adminResponse = await fetch(`${base}/admin?view=recurring`, { headers: { cookie: admin.cookie } });

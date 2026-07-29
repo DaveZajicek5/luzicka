@@ -21,7 +21,7 @@ const {
   calculatorData, saveCalculatorSettings, generateCalculatorMonth, reopenCalculatorMonth, getSetting
 } = require('./calculator');
 const {
-  loginPage, dashboardPage, oneOffPage, adminPage, auditPage, printPage,
+  loginPage, servicesPage, dashboardPage, oneOffPage, adminPage, auditPage, printPage,
   calculatorPage, calculatorSettingsPage
 } = require('./html');
 
@@ -186,6 +186,11 @@ function createServer(config) {
           config, session, period, data: monthData(db, period),
           message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
         }));
+      }
+
+      if (req.method === 'GET' && pathname === '/services') {
+        const session = requireSession(req, res); if (!session) return;
+        return send(res, 200, servicesPage({ config, session }));
       }
 
       if (req.method === 'GET' && pathname === '/one-off') {
