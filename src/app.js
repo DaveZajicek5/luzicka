@@ -3,36 +3,19 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
-const crypto = require('node:crypto');
 const querystring = require('node:querystring');
-const QRCode = require('qrcode');
-const { formidable } = require('formidable');
 const {
-  openDatabase, audit, listPeople, listCategories, addExpense, voidExpense, generateRecurring, transferCredit, monthData
+  openDatabase, audit, listPeople, listCategories, addExpense, generateRecurring, monthData
 } = require('./db');
 const {
   createSession, readSession, sessionCookie, clearCookie, roleForPassword, isPrivateAddress
 } = require('./auth');
 const {
-  parseMoney, parseDecimal, currentPeriod, nextPeriod, isPeriod, isDate, csvCell, splitWeighted
+  parseMoney, parseDecimal, currentPeriod, isPeriod, isDate, csvCell
 } = require('./utils');
-const {
-  calculatorData, saveCalculatorSettings, generateCalculatorMonth, reopenCalculatorMonth, getSetting
-} = require('./calculator');
-const {
-  loginPage, dashboardPage, oneOffPage, adminPage, auditPage, printPage,
-  calculatorPage, calculatorSettingsPage
-} = require('./html');
+const { loginPage, servicesPage, dashboardPage, adminPage, auditPage, printPage } = require('./html');
 
-const CSS = Buffer.concat([
-  fs.readFileSync(path.join(__dirname, '..', 'public', 'foundation.css')),
-  fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css')),
-  fs.readFileSync(path.join(__dirname, '..', 'public', 'calculator.css')),
-  fs.readFileSync(path.join(__dirname, '..', 'public', 'adjustments.css')),
-  fs.readFileSync(path.join(__dirname, '..', 'public', 'workflows.css')),
-  fs.readFileSync(path.join(__dirname, '..', 'public', 'polish.css'))
-]);
+const CSS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css'));
 
 function readBody(req, limit = 1024 * 1024) {
   return new Promise((resolve, reject) => {
@@ -44,19 +27,6 @@ function readBody(req, limit = 1024 * 1024) {
     });
     req.on('end', () => resolve(querystring.parse(body)));
     req.on('error', reject);
-  });
-}
-
-function readMultipart(req) {
-  return new Promise((resolve, reject) => {
-    const form = formidable({
-      uploadDir: os.tmpdir(), maxFileSize: 10 * 1024 * 1024,
-      maxFiles: 1, allowEmptyFiles: false, multiples: true
-    });
-    form.parse(req, (error, fields, files) => error ? reject(error) : resolve({
-      body: Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, Array.isArray(value) && value.length === 1 ? value[0] : value])),
-      file: (Array.isArray(files.attachment) ? files.attachment[0] : files.attachment) || null
-    }));
   });
 }
 
@@ -106,8 +76,7 @@ function createServer(config) {
       FROM recurring_templates t JOIN categories c ON c.code=t.category_code ORDER BY t.active DESC,t.id
     `).all();
     const readings = db.prepare('SELECT * FROM meter_readings ORDER BY read_on DESC,id DESC LIMIT 200').all();
-    const costRules = db.prepare('SELECT * FROM monthly_cost_rules ORDER BY active DESC,position,code').all();
-    return { people, categories, templates, readings, costRules };
+    return { people, categories, templates, readings };
   }
 
   return http.createServer(async (req, res) => {
@@ -119,7 +88,7 @@ function createServer(config) {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const pathname = url.pathname;
 
-      if (req.method === 'GET' && pathname === '/app.css') return send(res, 200, CSS, 'text/css; charset=utf-8', { 'Cache-Control': 'private, no-cache, max-age=0, must-revalidate' });
+      if (req.method === 'GET' && pathname === '/app.css') return send(res, 200, CSS, 'text/css; charset=utf-8', { 'Cache-Control': 'private, max-age=3600' });
       if (req.method === 'GET' && pathname === '/health') return send(res, 200, 'ok', 'text/plain; charset=utf-8');
       if (req.method === 'GET' && pathname === '/login') {
         if (readSession(req, config)) return redirect(res, '/');
@@ -147,38 +116,6 @@ function createServer(config) {
         return redirectWithCookie(res, '/login', clearCookie());
       }
 
-      if (req.method === 'POST' && pathname === '/statements/confirm') {
-        const session = requireSession(req, res); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
-        if (!isPeriod(body.period)) throw new Error('Neplatný měsíc.');
-        if (!db.prepare('SELECT 1 FROM calculator_runs WHERE period=?').get(body.period)) {
-          throw new Error('Vyúčtování ještě není dokončené.');
-        }
-        const personIds = (Array.isArray(body.person_id) ? body.person_id : [body.person_id]).map(Number);
-        const validIds = new Set(listPeople(db, true).map((person) => person.id));
-        if (!personIds.length || personIds.some((personId) => !validIds.has(personId))) throw new Error('Neplatný obyvatel.');
-        const confirm = db.prepare(`INSERT INTO statement_confirmations(period,person_id) VALUES (?,?)
-          ON CONFLICT(period,person_id) DO UPDATE SET confirmed_at=CURRENT_TIMESTAMP`);
-        db.exec('BEGIN IMMEDIATE');
-        try {
-          for (const personId of personIds) confirm.run(body.period, personId);
-          audit(db, 'confirm', 'statement', null, { period: body.period, personIds, role: session.role });
-          db.exec('COMMIT');
-        } catch (error) {
-          db.exec('ROLLBACK');
-          throw error;
-        }
-        return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Vyúčtování bylo potvrzeno.')}`);
-      }
-
-      if (req.method === 'POST' && pathname === '/credits/transfer') {
-        const session = requireSession(req, res, true); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
-        if (!isPeriod(body.source_period) || !isPeriod(body.target_period)) throw new Error('Neplatný měsíc převodu.');
-        transferCredit(db, body.source_period, body.target_period, Number(body.person_id));
-        return redirect(res, `/?period=${encodeURIComponent(body.target_period)}&message=${encodeURIComponent('Přeplatek byl převeden jako sleva do dalšího měsíce.')}`);
-      }
-
       if (req.method === 'GET' && pathname === '/') {
         const session = requireSession(req, res); if (!session) return;
         const period = isPeriod(url.searchParams.get('period')) ? url.searchParams.get('period') : currentPeriod();
@@ -188,240 +125,33 @@ function createServer(config) {
         }));
       }
 
-      if (req.method === 'GET' && pathname === '/one-off') {
+      if (req.method === 'GET' && pathname === '/services') {
         const session = requireSession(req, res); if (!session) return;
-        const period = isPeriod(url.searchParams.get('period')) ? url.searchParams.get('period') : nextPeriod(currentPeriod());
-        return send(res, 200, oneOffPage({
-          config, session, people: listPeople(db), categories: listCategories(db), period,
-          message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
-        }));
+        return send(res, 200, servicesPage({ config, session }));
       }
 
       if (req.method === 'GET' && pathname === '/admin') {
         const session = requireSession(req, res, true); if (!session) return;
-        return send(res, 200, adminPage({
-          config, session, ...adminData(), view: url.searchParams.get('view') || 'home',
-          message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
-        }));
-      }
-
-      if (req.method === 'POST' && pathname === '/cost-rules') {
-        const session = requireSession(req, res, true); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
-        const label = String(body.label || '').trim();
-        const amount = parseMoney(body.amount);
-        const rule = String(body.allocation_rule || '');
-        if (!label || amount < 0 || !['equal', 'area_common', 'private_area', 'weights'].includes(rule)) throw new Error('Neplatný pravidelný náklad.');
-        const code = `custom_${Date.now()}`;
-        const position = db.prepare('SELECT COALESCE(MAX(position),0)+10 AS position FROM monthly_cost_rules').get().position;
-        db.prepare(`INSERT INTO monthly_cost_rules
-          (code,label,category_code,amount_halere,allocation_rule,position) VALUES (?,?,?,?,?,?)`)
-          .run(code, label, 'other', amount, rule, position);
-        audit(db, 'create', 'cost_rule', null, { code, label, amount, rule });
-        return redirect(res, `/admin?view=recurring&message=${encodeURIComponent('Pravidelný náklad byl přidán.')}`);
-      }
-
-      const costRuleUpdate = pathname.match(/^\/cost-rules\/([a-zA-Z0-9_-]+)$/);
-      if (req.method === 'POST' && costRuleUpdate) {
-        const session = requireSession(req, res, true); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
-        const label = String(body.label || '').trim();
-        const amount = parseMoney(body.amount);
-        const rule = String(body.allocation_rule || '');
-        if (!label || amount < 0 || !['equal', 'area_common', 'private_area', 'weights'].includes(rule)) throw new Error('Neplatný pravidelný náklad.');
-        db.prepare('UPDATE monthly_cost_rules SET label=?,amount_halere=?,allocation_rule=? WHERE code=?')
-          .run(label, amount, rule, costRuleUpdate[1]);
-        audit(db, 'update', 'cost_rule', null, { code: costRuleUpdate[1], label, amount, rule });
-        return redirect(res, `/admin?view=recurring&message=${encodeURIComponent('Pravidelný náklad byl upraven.')}`);
-      }
-
-      const costRuleDeactivate = pathname.match(/^\/cost-rules\/([a-zA-Z0-9_-]+)\/deactivate$/);
-      if (req.method === 'POST' && costRuleDeactivate) {
-        const session = requireSession(req, res, true); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
-        db.prepare('UPDATE monthly_cost_rules SET active=0 WHERE code=?').run(costRuleDeactivate[1]);
-        audit(db, 'deactivate', 'cost_rule', null, { code: costRuleDeactivate[1] });
-        return redirect(res, `/admin?view=recurring&message=${encodeURIComponent('Pravidelný náklad byl odebrán z budoucích měsíců.')}`);
-      }
-
-      const costRuleActivate = pathname.match(/^\/cost-rules\/([a-zA-Z0-9_-]+)\/activate$/);
-      if (req.method === 'POST' && costRuleActivate) {
-        const session = requireSession(req, res, true); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
-        db.prepare('UPDATE monthly_cost_rules SET active=1 WHERE code=?').run(costRuleActivate[1]);
-        audit(db, 'activate', 'cost_rule', null, { code: costRuleActivate[1] });
-        return redirect(res, `/admin?view=recurring&message=${encodeURIComponent('Pravidelný náklad byl obnoven.')}`);
-      }
-
-      if (req.method === 'GET' && pathname === '/calculator') {
-        const session = requireSession(req, res, true); if (!session) return;
-        const period = isPeriod(url.searchParams.get('period')) ? url.searchParams.get('period') : currentPeriod();
-        return send(res, 200, calculatorPage({
-          config, session, period, data: calculatorData(db, period),
-          message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
-        }));
-      }
-
-      if (req.method === 'GET' && pathname === '/calculator/settings') {
-        const session = requireSession(req, res, true); if (!session) return;
-        const period = isPeriod(url.searchParams.get('period')) ? url.searchParams.get('period') : currentPeriod();
-        return send(res, 200, calculatorSettingsPage({
-          config, session, period, data: calculatorData(db, period),
-          message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || ''
-        }));
-      }
-
-      if (req.method === 'POST' && pathname === '/calculator/settings') {
-        const session = requireSession(req, res, true); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
-        const totalArea = parseDecimal(body.total_area_m2);
-        const paymentDueDay = Number(body.payment_due_day);
-        const paymentIban = String(body.payment_iban || '').replace(/\s+/g, '').toUpperCase();
-        if (!(totalArea > 0)) throw new Error('Celková plocha bytu musí být kladná.');
-        if (!Number.isInteger(paymentDueDay) || paymentDueDay < 1 || paymentDueDay > 28) throw new Error('Den splatnosti musí být mezi 1 a 28.');
-        if (paymentIban && !/^CZ\d{22}$/.test(paymentIban)) throw new Error('Český IBAN musí mít tvar CZ a 22 číslic.');
-        const people = listPeople(db, true).map((person) => {
-          return { id: person.id, privateArea: 0 };
-        });
-        const current = calculatorData(db, body.period || currentPeriod());
-        const rooms = current.rooms.map((room) => {
-          const lengthM = parseDecimal(body[`room_length_${room.id}`]);
-          const widthM = parseDecimal(body[`room_width_${room.id}`]);
-          const name = String(body[`room_name_${room.id}`] || '').trim();
-          if (!name || !(lengthM > 0) || !(widthM > 0)) throw new Error('Název a rozměry pokoje musí být platné.');
-          const share = lengthM * widthM / Math.max(1, room.personIds.length);
-          for (const personId of room.personIds) {
-            const person = people.find((item) => item.id === personId);
-            if (person) person.privateArea += share;
-          }
-          return { id: room.id, name, lengthM, widthM };
-        });
-        if (rooms.reduce((sum, room) => sum + room.lengthM * room.widthM, 0) > totalArea) {
-          throw new Error('Součet soukromých ploch je větší než plocha bytu.');
-        }
-        const allowedRules = ['equal', 'area_common', 'private_area', 'weights'];
-        const costs = current.costs.map((cost) => {
-          const allocationRule = body[`cost_rule_${cost.code}`] === undefined
-            ? cost.allocation_rule
-            : String(body[`cost_rule_${cost.code}`] || '');
-          if (!allowedRules.includes(allocationRule)) throw new Error(`Neplatné pravidlo pro ${cost.label}.`);
-          const amountHalere = body[`cost_amount_${cost.code}`] === undefined
-            ? cost.amount_halere
-            : parseMoney(body[`cost_amount_${cost.code}`]);
-          if (amountHalere < 0) throw new Error(`Částka ${cost.label} nesmí být záporná.`);
-          return { code: cost.code, amountHalere, allocationRule };
-        });
-        const waste = {};
-        for (const prefix of ['waste_mixed', 'waste_sorted']) {
-          const weekday = String(body[`${prefix}_weekday`] || '');
-          const interval = Number(body[`${prefix}_interval_weeks`]);
-          const anchor = String(body[`${prefix}_anchor_date`] || '');
-          if (weekday && !/^[0-6]$/.test(weekday)) throw new Error('Neplatný den svozu.');
-          if (!Number.isInteger(interval) || interval < 1 || interval > 8) throw new Error('Interval svozu musí být 1–8 týdnů.');
-          if (anchor && !isDate(anchor)) throw new Error('Neplatné počáteční datum svozu.');
-          waste[`${prefix}_weekday`] = weekday;
-          waste[`${prefix}_interval_weeks`] = interval;
-          waste[`${prefix}_anchor_date`] = anchor;
-        }
-        saveCalculatorSettings(db, audit, { totalArea, paymentIban, paymentDueDay, people, rooms, costs, waste });
-        const period = isPeriod(body.period) ? body.period : currentPeriod();
-        return redirect(res, `/calculator?period=${encodeURIComponent(period)}&message=${encodeURIComponent('Nastavení a náhled byly přepočítány.')}`);
-      }
-
-      if (req.method === 'POST' && pathname === '/calculator/generate') {
-        const session = requireSession(req, res, true); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
-        if (!isPeriod(body.period)) throw new Error('Neplatný měsíc.');
-        generateCalculatorMonth(db, audit, body.period);
-        return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Měsíční předpis byl vytvořen a připsán nájemníkům.')}`);
-      }
-
-      if (req.method === 'POST' && pathname === '/calculator/reopen') {
-        const session = requireSession(req, res, true); if (!session) return;
-        const body = await readBody(req); verifyCsrf(session, body);
-        if (!isPeriod(body.period)) throw new Error('Neplatný měsíc.');
-        const reason = String(body.reason || 'Vráceno k opravě předpisu').trim();
-        reopenCalculatorMonth(db, audit, body.period, reason);
-        return redirect(res, `/calculator?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Předpis byl stornován a měsíc je znovu připravený k úpravě.')}`);
-      }
-
-      if (req.method === 'GET' && pathname === '/payment-qr.svg') {
-        const session = requireSession(req, res); if (!session) return;
-        const period = url.searchParams.get('period');
-        const personId = Number(url.searchParams.get('person'));
-        if (!isPeriod(period) || !Number.isInteger(personId)) throw new Error('Neplatné údaje platby.');
-        const month = monthData(db, period);
-        const person = month.people.find((item) => item.id === personId);
-        if (!person || person.payment_group_balance_halere <= 0) throw new Error('Pro tuto osobu není co platit.');
-        const iban = getSetting(db, 'payment_iban', '').replace(/\s+/g, '').toUpperCase();
-        if (!/^CZ\d{22}$/.test(iban)) throw new Error('Správce zatím nenastavil účet pro QR platby.');
-        const variableSymbol = `${period.replace('-', '')}${String(personId).padStart(2, '0')}`.slice(0, 10);
-        const amount = person.payment_group_balance_halere || person.balance_halere;
-        const message = `Luzicka ${period} ${person.payment_group_names || person.name}`.replace(/[*:]/g, ' ').slice(0, 60);
-        const spd = `SPD*1.0*ACC:${iban}*AM:${(amount / 100).toFixed(2)}*CC:CZK*X-VS:${variableSymbol}*MSG:${message}`;
-        const svg = await QRCode.toString(spd, { type: 'svg', margin: 1, width: 360, errorCorrectionLevel: 'M' });
-        return send(res, 200, svg, 'image/svg+xml; charset=utf-8');
+        return send(res, 200, adminPage({ config, session, ...adminData(), message: url.searchParams.get('message') || '', error: url.searchParams.get('error') || '' }));
       }
 
       if (req.method === 'POST' && pathname === '/expenses') {
-        const session = requireSession(req, res); if (!session) return;
-        const multipart = String(req.headers['content-type'] || '').startsWith('multipart/form-data');
-        const parsed = multipart ? await readMultipart(req) : { body: await readBody(req), file: null };
-        const { body } = parsed; verifyCsrf(session, body);
+        const session = requireSession(req, res, true); if (!session) return;
+        const body = await readBody(req); verifyCsrf(session, body);
         const personIds = Array.isArray(body.person_id) ? body.person_id : body.person_id ? [body.person_id] : [];
         if (!isDate(body.occurred_on) || !isPeriod(body.period)) throw new Error('Neplatné datum nebo měsíc.');
         const description = String(body.description || '').trim();
         if (!description) throw new Error('Popis položky nesmí být prázdný.');
-        const allowedAttachments = new Map([
-          ['application/pdf', '.pdf'], ['image/jpeg', '.jpg'], ['image/png', '.png'], ['image/heic', '.heic']
-        ]);
-        if (parsed.file?.size && !allowedAttachments.has(parsed.file.mimetype)) {
-          fs.rmSync(parsed.file.filepath, { force: true });
-          throw new Error('Příloha musí být PDF, JPG, PNG nebo HEIC.');
-        }
-        let amountHalere = parseMoney(body.amount);
-        if (body.entry_type === 'credit') amountHalere = -Math.abs(amountHalere);
-        else if (body.entry_type === 'charge') amountHalere = Math.abs(amountHalere);
-        const expenseId = addExpense(db, {
+        addExpense(db, {
           occurredOn: body.occurred_on,
           period: body.period,
           categoryCode: String(body.category_code),
           description,
-          amountHalere,
+          amountHalere: parseMoney(body.amount),
           paidByPersonId: body.paid_by_person_id ? Number(body.paid_by_person_id) : null,
           personIds
         });
-        if (parsed.file?.size) {
-          const extension = allowedAttachments.get(parsed.file.mimetype);
-          const attachmentDir = path.join(path.dirname(config.databasePath), 'attachments');
-          fs.mkdirSync(attachmentDir, { recursive: true });
-          const storedName = `${crypto.randomUUID()}${extension}`;
-          fs.renameSync(parsed.file.filepath, path.join(attachmentDir, storedName));
-          db.prepare(`INSERT INTO expense_attachments(expense_id,original_name,stored_name,mime_type,size_bytes)
-            VALUES (?,?,?,?,?)`).run(expenseId, String(parsed.file.originalFilename || 'příloha'), storedName, parsed.file.mimetype, parsed.file.size);
-          audit(db, 'create', 'expense_attachment', null, { expenseId, originalName: parsed.file.originalFilename, size: parsed.file.size });
-        }
-        return redirect(res, `/one-off?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Náklad byl zařazen do vyúčtování.')}`);
-      }
-
-      const attachmentDownload = pathname.match(/^\/attachments\/(\d+)$/);
-      if (req.method === 'GET' && attachmentDownload) {
-        const session = requireSession(req, res); if (!session) return;
-        const attachment = db.prepare('SELECT * FROM expense_attachments WHERE id=?').get(Number(attachmentDownload[1]));
-        if (!attachment) return send(res, 404, 'Příloha neexistuje.', 'text/plain; charset=utf-8');
-        const filePath = path.join(path.dirname(config.databasePath), 'attachments', attachment.stored_name);
-        if (!fs.existsSync(filePath)) return send(res, 404, 'Soubor přílohy chybí.', 'text/plain; charset=utf-8');
-        return send(res, 200, fs.readFileSync(filePath), attachment.mime_type, {
-          'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(attachment.original_name)}`
-        });
-      }
-
-      const expenseAttachment = pathname.match(/^\/expenses\/(\d+)\/attachment$/);
-      if (req.method === 'GET' && expenseAttachment) {
-        const session = requireSession(req, res); if (!session) return;
-        const attachment = db.prepare('SELECT id FROM expense_attachments WHERE expense_id=? ORDER BY id DESC LIMIT 1').get(Number(expenseAttachment[1]));
-        if (!attachment) return send(res, 404, 'Příloha neexistuje.', 'text/plain; charset=utf-8');
-        return redirect(res, `/attachments/${attachment.id}`);
+        return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Položka byla přidána.')}`);
       }
 
       const expenseVoid = pathname.match(/^\/expenses\/(\d+)\/void$/);
@@ -431,8 +161,10 @@ function createServer(config) {
         const id = Number(expenseVoid[1]);
         const reason = String(body.reason || '').trim();
         if (!reason) throw new Error('Uveďte důvod storna.');
-        const result = voidExpense(db, id, reason);
-        return redirect(res, `/?period=${encodeURIComponent(result.period)}&message=${encodeURIComponent('Položka a související zápočet platby byly stornovány.')}`);
+        const result = db.prepare("UPDATE expenses SET status='void',voided_at=CURRENT_TIMESTAMP,void_reason=? WHERE id=? AND status='active'").run(reason, id);
+        if (!result.changes) throw new Error('Položka už je stornovaná nebo neexistuje.');
+        audit(db, 'void', 'expense', id, { reason });
+        return redirect(res, `/?period=${encodeURIComponent(body.period || currentPeriod())}&message=${encodeURIComponent('Položka byla stornována.')}`);
       }
 
       if (req.method === 'POST' && pathname === '/payments') {
@@ -440,36 +172,10 @@ function createServer(config) {
         const body = await readBody(req); verifyCsrf(session, body);
         if (!isDate(body.paid_on) || !isPeriod(body.period)) throw new Error('Neplatné datum nebo měsíc.');
         const amount = parseMoney(body.amount); if (amount <= 0) throw new Error('Platba musí být kladná.');
-        const note = String(body.note || '').trim();
-        const personValue = String(body.person_id || '');
-        if (personValue.startsWith('group:')) {
-          const group = personValue.slice(6);
-          const month = monthData(db, body.period);
-          const members = month.people.filter((person) => person.payment_group === group);
-          if (members.length < 2) throw new Error('Platební skupina neexistuje.');
-          const allocations = splitWeighted(amount, members.map((person) => ({
-            id: person.id, weight: Math.max(0, person.balance_halere) || 1
-          })));
-          const insert = db.prepare('INSERT INTO payments(person_id,period,paid_on,amount_halere,note) VALUES (?,?,?,?,?)');
-          const ids = [];
-          db.exec('BEGIN IMMEDIATE');
-          try {
-            for (const allocation of allocations) {
-              const result = insert.run(allocation.personId, body.period, body.paid_on, allocation.amount, note || 'Společná platba');
-              ids.push(Number(result.lastInsertRowid));
-            }
-            audit(db, 'create', 'group_payment', null, { group, ids, amount_halere: amount, allocations });
-            db.exec('COMMIT');
-          } catch (error) {
-            db.exec('ROLLBACK');
-            throw error;
-          }
-        } else {
-          const result = db.prepare('INSERT INTO payments(person_id,period,paid_on,amount_halere,note) VALUES (?,?,?,?,?)')
-            .run(Number(personValue), body.period, body.paid_on, amount, note);
-          audit(db, 'create', 'payment', Number(result.lastInsertRowid), { ...body, amount_halere: amount });
-        }
-        return redirect(res, `/admin?view=payments&message=${encodeURIComponent('Platba byla přidána.')}`);
+        const result = db.prepare('INSERT INTO payments(person_id,period,paid_on,amount_halere,note) VALUES (?,?,?,?,?)')
+          .run(Number(body.person_id), body.period, body.paid_on, amount, String(body.note || '').trim());
+        audit(db, 'create', 'payment', Number(result.lastInsertRowid), { ...body, amount_halere: amount });
+        return redirect(res, `/?period=${encodeURIComponent(body.period)}&message=${encodeURIComponent('Platba byla přidána.')}`);
       }
 
       const paymentVoid = pathname.match(/^\/payments\/(\d+)\/void$/);
@@ -494,7 +200,7 @@ function createServer(config) {
         const result = db.prepare('INSERT INTO meter_readings(meter_type,read_on,value,unit,note) VALUES (?,?,?,?,?)')
           .run(body.meter_type, body.read_on, parseDecimal(body.value), unit, String(body.note || '').trim());
         audit(db, 'create', 'meter_reading', Number(result.lastInsertRowid), body);
-        return redirect(res, `/admin?view=meters&message=${encodeURIComponent('Odečet byl uložen.')}`);
+        return redirect(res, `/admin?message=${encodeURIComponent('Odečet byl uložen.')}`);
       }
 
       const meterVoid = pathname.match(/^\/meters\/(\d+)\/void$/);
@@ -558,7 +264,7 @@ function createServer(config) {
 
       if (req.method === 'GET' && pathname === '/audit') {
         const session = requireSession(req, res, true); if (!session) return;
-        const entries = db.prepare('SELECT * FROM audit_log ORDER BY id DESC').all();
+        const entries = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 500').all();
         return send(res, 200, auditPage({ config, session, entries }));
       }
 
