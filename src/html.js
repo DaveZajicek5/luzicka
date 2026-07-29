@@ -10,6 +10,7 @@ function layout({ title, body, session, config, period, message, error, print = 
       <a class="brand" href="/?period=${escapeHtml(period || '')}">${escapeHtml(config.householdName)}</a>
       <nav>
         <a href="/?period=${escapeHtml(period || '')}">Přehled</a>
+        <a href="/services">Služby</a>
         <a href="/one-off">Přidat náklad</a>
         ${session.role === 'admin' ? '<a href="/calculator">Vyúčtování</a><a href="/admin">Správa</a><a href="/audit">Audit</a>' : ''}
         <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><button class="link-button">Odhlásit</button></form>
@@ -22,7 +23,7 @@ function layout({ title, body, session, config, period, message, error, print = 
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>${escapeHtml(title)} · ${escapeHtml(config.householdName)}</title>
-  <link rel="stylesheet" href="/app.css?v=20260725-5">
+  <link rel="stylesheet" href="/app.css?v=20260729-1">
 </head>
 <body class="${print ? 'print-view' : ''}">
 ${nav}
@@ -61,6 +62,72 @@ function loginPage(config, error = '') {
       <p class="muted small">Aplikace neposílá data do cloudu. Přístup je navíc omezen na lokální síť, pokud je zapnuté LAN_ONLY.</p>
     </section>`
   });
+}
+
+function servicesPage({ config, session }) {
+  const host = 'https://luzicka.tailef7327.ts.net';
+  const primary = [
+    {
+      initials: 'NÁ', name: 'Nájmy a domácnost', href: '/',
+      description: 'Vyúčtování, náklady, platby a QR kódy.', meta: 'Lužická'
+    },
+    {
+      initials: 'SE', name: 'Seerr', href: `${host}:5055`,
+      description: 'Najít a přidat film nebo seriál do knihovny.', meta: 'Požadavky na média'
+    },
+    {
+      initials: 'QB', name: 'qBittorrent', href: `${host}:8080`,
+      description: 'Průběh aktuálních stahování a ruční správa.', meta: 'Stahování'
+    }
+  ];
+  const media = [
+    {
+      initials: 'SO', name: 'Sonarr', href: `${host}:8989`,
+      description: 'Seriály, epizody a jejich automatizace.', meta: 'Seriály'
+    },
+    {
+      initials: 'RA', name: 'Radarr', href: `${host}:7878`,
+      description: 'Filmy, kvalita a automatické vyhledávání.', meta: 'Filmy'
+    },
+    {
+      initials: 'BA', name: 'Bazarr', href: `${host}:6767`,
+      description: 'Titulky k filmům a seriálům.', meta: 'Titulky'
+    },
+    {
+      initials: 'MA', name: 'Maintainerr', href: `${host}:6246`,
+      description: 'Úklid zhlédnutých a nepotřebných médií.', meta: 'Údržba knihovny'
+    }
+  ];
+  const system = [
+    {
+      initials: 'PR', name: 'Prowlarr', href: `${host}:9696`,
+      description: 'Zdroje vyhledávání pro Sonarr a Radarr.', meta: 'Indexery'
+    }
+  ];
+  const cards = (items) => items.map((item) => `<a class="service-card" href="${escapeHtml(item.href)}"${item.href === '/' ? '' : ' target="_blank" rel="noreferrer"'}>
+    <span class="service-icon" aria-hidden="true">${escapeHtml(item.initials)}</span>
+    <span class="service-copy"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.description)}</span><small>${escapeHtml(item.meta)}</small></span>
+    <span class="service-arrow" aria-hidden="true">↗</span>
+  </a>`).join('');
+  const body = `<section class="services-hero">
+      <div><div class="eyebrow">Domácí server</div><h1>Všechno na jednom místě</h1>
+        <p>Rychlý přístup ke službám na serveru Lužická. Odkazy fungují po připojení k našemu Tailnetu.</p></div>
+      <div class="tailnet-status"><span aria-hidden="true"></span><div><strong>Soukromá síť</strong><small>luzicka · Tailscale</small></div></div>
+    </section>
+    <section class="service-section" aria-labelledby="service-everyday">
+      <div class="service-section-head"><div><span>01</span><h2 id="service-everyday">Nejčastěji používané</h2></div><p>Věci, kvůli kterým sem obvykle jdete.</p></div>
+      <div class="service-grid primary-services">${cards(primary)}</div>
+    </section>
+    <section class="service-section" aria-labelledby="service-media">
+      <div class="service-section-head"><div><span>02</span><h2 id="service-media">Média a automatizace</h2></div><p>Detailní správa knihovny a stahování.</p></div>
+      <div class="service-grid">${cards(media)}</div>
+    </section>
+    <section class="service-section compact-service-section" aria-labelledby="service-system">
+      <div class="service-section-head"><div><span>03</span><h2 id="service-system">Technická správa</h2></div><p>Nástroje, které běžně není potřeba otevírat.</p></div>
+      <div class="service-grid">${cards(system)}</div>
+    </section>
+    <p class="services-footnote">Odkaz se neotevře? Nejdřív zkontrolujte, že je na zařízení zapnutý Tailscale.</p>`;
+  return layout({ title: 'Služby', body, session, config });
 }
 
 function statementCards(people, period, paymentEnabled, session, ready) {
@@ -470,6 +537,6 @@ function printPage({ config, period, data }) {
 }
 
 module.exports = {
-  layout, loginPage, dashboardPage, oneOffPage, adminPage, auditPage, printPage,
+  layout, loginPage, servicesPage, dashboardPage, oneOffPage, adminPage, auditPage, printPage,
   calculatorPage, calculatorSettingsPage
 };
