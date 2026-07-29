@@ -35,9 +35,41 @@ fieldset{border-radius:10px;padding:13px}
 .optional{font-weight:500;color:var(--muted);font-size:.8rem}
 .back-link{align-self:flex-start;font-size:.86rem;font-weight:720;text-decoration:none;padding:8px 0}
 .compact-form-head{max-width:780px;margin-left:auto;margin-right:auto;align-items:flex-start}
+.services-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:32px;margin:4px 0 38px}
+.services-hero h1{max-width:720px;margin:.28rem 0 .65rem;font-size:clamp(2.25rem,5vw,3.7rem);line-height:1;letter-spacing:-.05em}
+.services-hero p{max-width:650px;margin:0;color:var(--muted);font-size:1.03rem}
+.tailnet-status{display:flex;align-items:center;gap:11px;flex:0 0 auto;padding:12px 15px;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:0 4px 14px #17271e08}
+.tailnet-status>span{width:10px;height:10px;border-radius:50%;background:#35a26f;box-shadow:0 0 0 5px #35a26f1d}
+.tailnet-status div{display:flex;flex-direction:column}
+.tailnet-status strong{font-size:.84rem}
+.tailnet-status small{color:var(--muted);font-size:.72rem}
+.service-section{margin:0 0 34px}
+.service-section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin:0 2px 13px}
+.service-section-head>div{display:flex;align-items:center;gap:10px}
+.service-section-head>div>span{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:8px;background:#e8efea;color:var(--accent);font-size:.68rem;font-weight:850}
+.service-section-head h2{margin:0;font-size:1.08rem;letter-spacing:-.015em}
+.service-section-head p{margin:0;color:var(--muted);font-size:.82rem}
+.service-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}
+.primary-services{grid-template-columns:repeat(3,minmax(0,1fr))}
+.service-card{position:relative;display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:start;gap:13px;min-height:126px;padding:18px;border:1px solid var(--line);border-radius:14px;background:#fff;color:var(--ink);text-decoration:none;box-shadow:0 5px 18px #17271e08;transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease}
+.service-card:hover{transform:translateY(-2px);border-color:#a9bdb0;box-shadow:0 10px 25px #17271e10}
+.service-card:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.service-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:#e8efea;color:var(--accent);font-size:.72rem;font-weight:850;letter-spacing:.03em}
+.primary-services .service-card:first-child .service-icon{background:#173025;color:#fff}
+.service-copy{display:flex;flex-direction:column;min-width:0}
+.service-copy strong{font-size:1rem;letter-spacing:-.01em}
+.service-copy>span{margin-top:4px;color:var(--muted);font-size:.83rem;line-height:1.4}
+.service-copy small{margin-top:12px;color:var(--accent);font-size:.69rem;font-weight:780;text-transform:uppercase;letter-spacing:.06em}
+.service-arrow{color:#8a978f;font-size:1rem;line-height:1}
+.compact-service-section{margin-bottom:22px}
+.compact-service-section .service-grid{max-width:554px}
+.services-footnote{margin:0;padding-top:7px;border-top:1px solid var(--line);color:var(--muted);font-size:.78rem}
 @media(max-width:900px){
   .topbar nav{gap:1px}
   .period-picker input{width:100%}
+  .services-hero{align-items:flex-start}
+  .primary-services{grid-template-columns:1fr 1fr}
+  .primary-services .service-card:first-child{grid-column:1/-1}
 }
 @media(max-width:700px){
   .container{padding:24px 14px 52px}
@@ -46,7 +78,15 @@ fieldset{border-radius:10px;padding:13px}
   .topbar nav>a,.topbar .link-button{font-size:.78rem;padding:6px}
   .brand{padding:6px 0}
   .page-head h1{font-size:2.15rem}
+  .services-hero{align-items:stretch;flex-direction:column;margin-bottom:30px}
+  .tailnet-status{align-self:flex-start}
+  .service-section-head{align-items:flex-start;flex-direction:column;gap:4px}
+  .service-grid,.primary-services{grid-template-columns:1fr}
+  .primary-services .service-card:first-child{grid-column:auto}
+  .compact-service-section .service-grid{max-width:none}
+  .service-card{min-height:112px}
 }
 @media(max-width:480px){
-  .topbar nav a:nth-child(4),.topbar nav a:nth-child(5){display:none}
+  .topbar nav a:nth-child(5),.topbar nav a:nth-child(6){display:none}
+  .services-hero h1{font-size:2.45rem}
 }
