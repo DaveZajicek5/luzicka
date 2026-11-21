@@ -149,6 +149,8 @@ test('viewer neotevře administraci, admin přidá položku a export ji obsahuje
   assert.equal(services.status, 200);
   assert.match(servicesHtml, /Všechno na jednom místě/);
   assert.match(servicesHtml, /luzicka\.tailef7327\.ts\.net:5055/);
+  assert.match(servicesHtml, /luzicka\.tailef7327\.ts\.net:8989\/login\?returnUrl=%2F/);
+  assert.match(servicesHtml, /luzicka\.tailef7327\.ts\.net:7878\/login\?returnUrl=%2F/);
   assert.match(servicesHtml, /Sonarr/);
   assert.match(servicesHtml, /Prowlarr/);
 
