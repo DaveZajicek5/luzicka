@@ -82,11 +82,11 @@ function servicesPage({ config, session }) {
   ];
   const media = [
     {
-      initials: 'SO', name: 'Sonarr', href: `${host}:8989`,
+      initials: 'SO', name: 'Sonarr', href: `${host}:8989/login?returnUrl=%2F`,
       description: 'Seriály, epizody a jejich automatizace.', meta: 'Seriály'
     },
     {
-      initials: 'RA', name: 'Radarr', href: `${host}:7878`,
+      initials: 'RA', name: 'Radarr', href: `${host}:7878/login?returnUrl=%2F`,
       description: 'Filmy, kvalita a automatické vyhledávání.', meta: 'Filmy'
     },
     {
